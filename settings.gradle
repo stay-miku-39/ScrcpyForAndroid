@@ -1,7 +1,9 @@
 rootProject.name = 'ScrcpyForAndroid'
 
-include ':server', ':adb-library'
+include ':server', ':adb-library', ':input-server'
 project(':server').projectDir = file('scrcpy/server')
 // Keep the upstream checkout untouched; host-specific build integration lives here.
 project(':server').buildFileName = '../../gradle/scrcpy-server.gradle'
 project(':adb-library').projectDir = file('vendor/adb')
+project(':input-server').projectDir = file('src/inputServer')
+project(':input-server').buildFileName = '../../gradle/input-server.gradle'

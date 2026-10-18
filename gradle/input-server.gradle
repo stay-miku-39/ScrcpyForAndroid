@@ -1,0 +1,23 @@
+// Optional ADB-shell input receiver. No installed target APK or upstream patches.
+apply plugin: 'com.android.application'
+
+layout.buildDirectory = rootProject.layout.buildDirectory.dir('input-server')
+android {
+    namespace 'org.scrcpy.android.input'
+    compileSdk = (project.findProperty('androidCompileSdk') ?: '36').toInteger()
+    defaultConfig {
+        applicationId 'org.scrcpy.android.input'
+        minSdk 34
+        targetSdk 36
+        versionCode 1
+        versionName '1'
+    }
+    sourceSets.main {
+        manifest.srcFile 'AndroidManifest.xml'
+        java.srcDirs = ['java']
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}

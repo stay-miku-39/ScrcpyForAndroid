@@ -22,6 +22,9 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
     private String lastClipboard = "";
     private boolean resumed, pendingFloating, awaitingPermission, awaitingNotifications, switchingWindow;
     private boolean syncClipboard = true, syncVolume = true;
+    MicrophoneForwarder microphone;
+    private boolean selectingMicrophoneTarget, awaitingMicrophonePermission;
+    private String pendingMicrophoneTarget;
     private final Set<Integer> heldKeys = new HashSet<>();
     private float ballX = 1, ballY = .4f;
     private final ClipboardManager.OnPrimaryClipChangedListener clipListener = () -> sendClipboard(false);
@@ -90,6 +93,7 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         TextView title = new TextView(this); title.setText("远程控制"); title.setTextSize(19); title.setTextColor(MainUi.INK); panel.addView(title);
         addRow(panel, new String[]{"返回", "主页", "最近"}, new Runnable[]{() -> key(KeyEvent.KEYCODE_BACK), () -> key(KeyEvent.KEYCODE_HOME), () -> key(KeyEvent.KEYCODE_APP_SWITCH)});
         addRow(panel, new String[]{"音量+", "音量−", "旋转"}, new Runnable[]{() -> key(KeyEvent.KEYCODE_VOLUME_UP), () -> key(KeyEvent.KEYCODE_VOLUME_DOWN), () -> { if (session != null) session.send(new byte[]{11}); }});
+        addRow(panel, new String[]{microphone == null ? "转发麦克风" : "停止麦克风"}, new Runnable[]{this::toggleMicrophone});
         addRow(panel, new String[]{"粘贴", "获取剪贴板"}, new Runnable[]{() -> sendClipboard(true), () -> { if (session != null) session.getClipboard(); }});
         CheckBox clip = new CheckBox(this); clip.setText("同步文本剪贴板"); clip.setTextColor(MainUi.INK); clip.setChecked(syncClipboard);
         clip.setButtonTintList(android.content.res.ColorStateList.valueOf(MainUi.BLUE));
@@ -142,7 +146,7 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
     private void releaseKeys() { if (session != null) for (int code : heldKeys) session.send(ControlProtocol.key(KeyEvent.ACTION_UP, code)); heldKeys.clear(); }
     void requestFloatingWindow() {
         if (switchingWindow || session == null || !display.ownsSession()) return;
-        dismissMenu(); releaseKeys(); display.releaseTouches();
+        dismissMenu(); releaseKeys(); display.releaseTouches(); stopMicrophone();
         if (!Settings.canDrawOverlays(this)) {
             awaitingPermission = true;
             Toast.makeText(this, "请允许在其他应用上层显示", Toast.LENGTH_LONG).show();
@@ -171,6 +175,12 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
     }
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(request, permissions, results);
+        if (request == 22) {
+            awaitingMicrophonePermission = false;
+            if (results.length == 0 || results[0] != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                pendingMicrophoneTarget = null; status("未授予麦克风权限，转发未开启");
+            } else resumePendingMicrophone();
+        }
         if (request == 21) {
             awaitingNotifications = false;
             if (results.length == 0 || results[0] != android.content.pm.PackageManager.PERMISSION_GRANTED)
@@ -185,8 +195,55 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         if (pendingFloating) { pendingFloating = false; requestFloatingWindow(); }
     }
     @Override public void status(String message) {
+        if (microphone != null && microphone.isActive()) message += "\n麦克风正在转发至：" + microphone.targetPackage;
         status.setText(message); status.setVisibility(View.VISIBLE);
-        if (message.startsWith("已连接")) status.postDelayed(() -> status.setVisibility(View.GONE), 1800);
+        if (message.startsWith("已连接")) status.postDelayed(() -> { if (microphone == null) status.setVisibility(View.GONE); }, 1800);
+    }
+    private void toggleMicrophone() {
+        if (microphone != null) { stopMicrophone(); status("已连接：" + runtime.target + "（麦克风已停止）"); return; }
+        if (selectingMicrophoneTarget || session == null || !display.ownsSession()) return;
+        selectingMicrophoneTarget = true;
+        new Thread(() -> {
+            String target = "";
+            try { target = MicrophoneForwarder.foregroundPackage(runtime.shell("dumpsys activity activities")); }
+            catch (Exception e) { DebugLog.write("microphone foreground query: " + e.getMessage()); }
+            String current = target;
+            runOnUiThread(() -> {
+                selectingMicrophoneTarget = false;
+                if (!resumed || isFinishing() || session == null || session.isClosed() || !display.ownsSession()) return;
+                LinearLayout body = new LinearLayout(this); body.setOrientation(LinearLayout.VERTICAL); body.setPadding(dp(24), 0, dp(24), 0);
+                TextView explanation = new TextView(this); explanation.setText("实验功能，需要被控端 Android 14 及以上。向指定应用提供主控麦克风；建议先开启，再开始录音或网络通话。离开全屏或切换小窗会停止。\n\n被控应用包名（已填入当前前台应用）："); body.addView(explanation);
+                EditText app = new EditText(this); app.setSingleLine(true); app.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); app.setText(current); app.setHint("例如 com.example.app"); body.addView(app);
+                new AlertDialog.Builder(this).setTitle("转发本机麦克风").setView(body).setNegativeButton("取消", null)
+                        .setPositiveButton("开启", (dialog, which) -> requestMicrophone(app.getText().toString().trim())).show();
+            });
+        }, "microphone-target").start();
+    }
+    private void requestMicrophone(String target) {
+        if (!MicrophoneForwarder.validPackage(target)) { status("请输入有效的被控应用包名"); return; }
+        pendingMicrophoneTarget = target;
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            awaitingMicrophonePermission = true;
+            requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, 22);
+        } else resumePendingMicrophone();
+    }
+    private void resumePendingMicrophone() {
+        if (!resumed || awaitingMicrophonePermission || pendingMicrophoneTarget == null) return;
+        String target = pendingMicrophoneTarget; pendingMicrophoneTarget = null;
+        if (isFinishing() || session == null || session.isClosed() || !display.ownsSession()) return;
+        MicrophoneForwarder forwarding = new MicrophoneForwarder(this, runtime, target, new MicrophoneForwarder.Listener() {
+            public void started(MicrophoneForwarder current) { runOnUiThread(() -> { if (microphone == current && current.isActive()) status("已连接：" + runtime.target); }); }
+            public void stopped(MicrophoneForwarder current, String error) { runOnUiThread(() -> {
+                if (microphone != current) return;
+                microphone = null;
+                if (resumed && !isFinishing()) status(error == null ? "已连接：" + runtime.target : "麦克风转发失败：" + error);
+            }); }
+        });
+        microphone = forwarding; status("正在开启麦克风转发…"); forwarding.start();
+    }
+    private void stopMicrophone() {
+        pendingMicrophoneTarget = null;
+        if (microphone != null) { MicrophoneForwarder current = microphone; microphone = null; current.close(); }
     }
     @Override public void size(int width, int height) { }
     private void sendClipboard(boolean paste) {
@@ -206,10 +263,11 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
     @Override public void ended(String reason) { if (!isFinishing()) new AlertDialog.Builder(this).setMessage(reason).setPositiveButton("返回", (d,w) -> finish()).show(); }
     @Override protected void onResume() {
         super.onResume(); resumed = true;
+        resumePendingMicrophone();
         if (clipboard != null) clipboard.addPrimaryClipChangedListener(clipListener);
         if (runtime != null && getIntent().getBooleanExtra("audio", true)) runtime.acquireAudioFocus(this);
     }
-    @Override protected void onPause() { resumed = false; releaseKeys(); if (display != null) display.releaseTouches(); if (clipboard != null) clipboard.removePrimaryClipChangedListener(clipListener); super.onPause(); }
-    @Override protected void onStop() { if (!awaitingPermission && !awaitingNotifications) { if (display != null) display.dispose(); if (!isFinishing()) finish(); } super.onStop(); }
-    @Override protected void onDestroy() { dismissMenu(); releaseKeys(); if (display != null) display.dispose(); if (runtime != null) runtime.releaseAudioFocusIfIdle(this); super.onDestroy(); }
+    @Override protected void onPause() { resumed = false; if (!awaitingMicrophonePermission) stopMicrophone(); releaseKeys(); if (display != null) display.releaseTouches(); if (clipboard != null) clipboard.removePrimaryClipChangedListener(clipListener); super.onPause(); }
+    @Override protected void onStop() { if (!awaitingPermission && !awaitingNotifications && !awaitingMicrophonePermission) { if (display != null) display.dispose(); if (!isFinishing()) finish(); } super.onStop(); }
+    @Override protected void onDestroy() { stopMicrophone(); dismissMenu(); releaseKeys(); if (display != null) display.dispose(); if (runtime != null) runtime.releaseAudioFocusIfIdle(this); super.onDestroy(); }
 }

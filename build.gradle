@@ -27,8 +27,8 @@ android {
         applicationId 'org.scrcpy.android'
         minSdk 30
         targetSdk 36
-        versionCode 2
-        versionName '0.2.0'
+        versionCode 3
+        versionName '0.3.0'
         testInstrumentationRunner 'org.scrcpy.android.SmokeInstrumentation'
     }
     compileOptions {
@@ -43,11 +43,12 @@ android {
 // Always package the matching server built from this checkout, never download a
 // different release or rely on a separately installed desktop scrcpy.
 def serverApk = project(':server').layout.buildDirectory.file('outputs/apk/debug/server-debug.apk')
+def inputServerApk = project(':input-server').layout.buildDirectory.file('outputs/apk/debug/input-server-debug.apk')
 tasks.register('bundleScrcpyServer', Copy) {
-    dependsOn ':server:assembleDebug'
-    from serverApk
+    dependsOn ':server:assembleDebug', ':input-server:assembleDebug'
+    from(serverApk) { rename { 'scrcpy-server.jar' } }
+    from(inputServerApk) { rename { 'scrcpy-input-server.jar' } }
     into layout.buildDirectory.dir('generated/serverAssets')
-    rename { 'scrcpy-server.jar' }
 }
 tasks.named('preBuild').configure { dependsOn 'bundleScrcpyServer' }
 

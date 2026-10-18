@@ -1,5 +1,48 @@
 # Validation — 2026-10-18
 
+## 0.3.0 experimental microphone forwarding
+
+Only the new microphone checks and concurrent basic scrcpy video were exercised.
+The scrcpy submodule is unchanged. Build target remains Android 16 / API 36.
+
+- Root `:assembleDebug` and `:assembleDebugAndroidTest`: PASS.
+- `:testDebugUnitTest --tests org.scrcpy.android.MicrophoneTargetTest`: 5 PASS
+  (package validation, exact UID matching, system-UID exclusion, activity dump parsing).
+- `microphoneOnly` instrumentation on controller `emulator-5556` and target
+  `emulator-5558`, both Android 16 `user` builds: PASS.
+- A deterministic 1 kHz PCM source used the production ADB forwarding channel.
+  A separate-UID target app recorded it through normal MIC and
+  VOICE_COMMUNICATION AudioRecords, both routed to device type 25.
+- The initial split header/payload transport caused underruns. Combining each
+  frame into one ADB WRTE fixed that avoidable extra round trip. Startup and
+  encoder reconfiguration can still briefly underrun on the emulators; the
+  probe allows up to three one-second samples to settle while retaining the
+  tone detection threshold. This is not a call-quality or latency guarantee.
+- Explicit close restored target built-in-microphone routing (type 15) and
+  removed the injected test tone.
+- A deliberately stalled PCM source was closed by the five-second watchdog.
+- Actual full-screen UI: target package defaults to the foreground app;
+  denial of the Android microphone permission keeps forwarding off and leaves
+  video connected. Granting it starts the real controller AudioRecord and
+  displays an ongoing target indicator.
+- The menu stop action ends the real recording. After switching to Home and
+  allowing the Activity pause transition to complete, RECORD_AUDIO AppOps no
+  longer reports a running recording; logs confirm forwarding stopped.
+
+Final instrumentation result:
+
+```text
+INSTRUMENTATION_RESULT: result=PASS microphone PCM over ADB, cross-UID MIC/VOICE_COMMUNICATION, route restore, capture stall stop, concurrent scrcpy video
+INSTRUMENTATION_CODE: -1
+```
+
+Research, permissions, architecture and physical-device limitations are in
+INPUT_SHARING.md. Android 14/15 physical devices, actual communication apps,
+duplex echo/quality, background/floating capture and camera injection were not
+claimed as verified. Audio is not persisted; the deterministic-source test does
+not capture the real controller microphone. UI capture tests use the emulator.
+Logs and UI snapshots are in the ignored `test-results-local/input-sharing/`.
+
 ## Repository layout migration — basic smoke only
 
 The Android host is now the root project (`src/`, `build.gradle`); `scrcpy/`
