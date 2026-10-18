@@ -1,0 +1,28 @@
+Scrcpy Android adaptation, including scrcpy server 5.0.1
+https://github.com/Genymobile/scrcpy
+Copyright Genymobile and scrcpy contributors. Apache License 2.0.
+
+LibADB Android BC 3.4.0
+https://github.com/osservatorionessuno/libadb-android-bc
+Commit dcd931071b5e4b9ebc0ac598201755d5a8814b71
+Copyright 2021 Muntashir Al-Islam and contributors.
+The Apache-2.0 option of its dual license is used in this distribution.
+Local modifications are documented in vendor/adb/UPSTREAM.md.
+
+LibADB's BSD portions:
+Copyright 2013 Cameron Gutman.
+Copyright 2020 Sam Palmer.
+LibADB's MIT portions:
+Copyright 2013 Google Inc.
+Additional source attribution:
+Copyright 2020 南宫雪珊.
+Copyright 2022 Muntashir Al-Islam.
+Refer to the accompanying BSD-3-Clause and MIT license texts.
+
+BouncyCastle 1.84: https://www.bouncycastle.org
+Refer to BouncyCastle.txt for its license and copyright notice.
+
+AndroidX Core 1.15.0, AndroidX Activity 1.9.3 and transitive AndroidX libraries:
+Copyright The Android Open Source Project. Apache License 2.0.
+
+The matching source code and dependency versions are provided in this checkout.

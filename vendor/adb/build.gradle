@@ -1,0 +1,19 @@
+apply plugin: 'com.android.library'
+
+android {
+    namespace 'io.github.muntashirakon.adb'
+    compileSdk = (project.findProperty('androidCompileSdk') ?: '36').toInteger()
+    defaultConfig { minSdk 26 }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    testOptions { unitTests.returnDefaultValues = true }
+}
+dependencies {
+    implementation 'androidx.annotation:annotation:1.9.1'
+    api 'org.bouncycastle:bcprov-jdk15to18:1.84'
+    api 'org.bouncycastle:bctls-jdk15to18:1.84'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'net.java.dev.jna:jna:5.14.0'
+}

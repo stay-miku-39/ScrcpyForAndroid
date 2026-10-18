@@ -1,0 +1,39 @@
+// Build the submodule's original server sources with host-specific SDK settings.
+// This file is selected by settings.gradle; projectDir remains scrcpy/server.
+apply plugin: 'com.android.application'
+
+layout.buildDirectory = rootProject.layout.buildDirectory.dir('scrcpy-server')
+
+android {
+    namespace = 'com.genymobile.scrcpy'
+    compileSdk = (project.findProperty('androidCompileSdk') ?: '36').toInteger()
+    defaultConfig {
+        applicationId = 'com.genymobile.scrcpy'
+        minSdkVersion 21
+        targetSdkVersion 36
+        versionCode 50001
+        versionName '5.0.1'
+        testInstrumentationRunner = 'android.support.test.runner.AndroidJUnitRunner'
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+    buildFeatures {
+        buildConfig = true
+        aidl = true
+    }
+    lint {
+        disable 'UseRequiresApi'
+    }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}
+
+apply from: rootProject.file('scrcpy/config/android-checkstyle.gradle')
+tasks.named('checkstyle') {
+    configFile = rootProject.file('scrcpy/config/checkstyle/checkstyle.xml')
+}

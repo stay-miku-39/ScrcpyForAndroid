@@ -1,0 +1,13 @@
+.idea/
+.gradle/
+.gradle-local/
+.android-local/
+.deps/
+**/build/
+/dist/
+/test-results-local/
+local.properties
+*.iml
+*.log
+*.jks
+*.keystore
