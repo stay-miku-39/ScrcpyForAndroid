@@ -19,7 +19,9 @@
             </intent-filter>
         </activity>
         <activity android:name=".RemoteActivity" android:exported="false"
-            android:configChanges="orientation|screenSize|keyboardHidden" />
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY" android:value="true" />
+        </activity>
         <service android:name=".FloatingWindowService" android:exported="false" android:foregroundServiceType="mediaPlayback" />
         <provider android:name=".LogProvider" android:authorities="org.scrcpy.android.logs"
             android:exported="false" android:grantUriPermissions="true" />

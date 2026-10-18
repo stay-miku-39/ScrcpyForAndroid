@@ -54,6 +54,7 @@ final class MainUi {
             PopupMenu menu = new PopupMenu(a, more);
             menu.getMenu().add("本机凭据").setOnMenuItemClickListener(i -> { select("credential"); return true; });
             menu.getMenu().add("设备与凭据").setOnMenuItemClickListener(i -> { select("devices"); return true; });
+            menu.getMenu().add("设置").setOnMenuItemClickListener(i -> { select("settings"); return true; });
             menu.getMenu().add("导出调试日志").setOnMenuItemClickListener(i -> { a.exportLogs(); return true; });
             menu.getMenu().add("取消当前操作并断开连接").setOnMenuItemClickListener(i -> { a.cancelOperation(); return true; }); menu.show();
         }); root.addView(header);
@@ -69,7 +70,7 @@ final class MainUi {
         quickRemote.setOnClickListener(v -> a.startRemote(false)); a.operations.add(quickRemote);
         FrameLayout.LayoutParams shortcutPosition = new FrameLayout.LayoutParams(dp(112), dp(48), Gravity.BOTTOM | Gravity.END);
         shortcutPosition.setMargins(dp(16), dp(16), dp(16), dp(16)); pageArea.addView(quickRemote, shortcutPosition);
-        buildConnect(); buildPair(); devicePage = screen("devices", "设备与凭据", null); buildCredential(); buildTools(); buildScan(); buildShell(); buildFiles();
+        buildConnect(); buildPair(); devicePage = screen("devices", "设备与凭据", null); buildCredential(); buildTools(); buildScan(); buildShell(); buildFiles(); buildSettings();
         nav = row(); nav.setPadding(dp(12), dp(8), dp(12), dp(8)); nav.setBackgroundColor(Color.WHITE);
         String[][] navigation = {{"connect", "连接"}, {"devices", "设备与凭据"}, {"tools", "工具"}};
         for (String[] item : navigation) {
@@ -147,6 +148,35 @@ final class MainUi {
         note(card, "配对端口与连接端口不同。配对成功后回到连接页，填写无线调试首页的连接端口。配对码不会保存。");
         action(card, "返回连接", () -> select("connect"), false);
     }
+    private void buildSettings() {
+        LinearLayout body = screen("settings", "设置", "connect"), card = card(body);
+        title(card, "界面透明度");
+        note(card, "数值越小越透明。保留最低 20% 不透明度，避免找不到控制按钮。设置自动保存。小窗设置作用于整个窗口，包括远程画面和操作栏。");
+        SharedPreferences appearance = UiPreferences.get(a);
+        opacityControl(card, appearance, "全屏悬浮菜单球", UiPreferences.BALL);
+        opacityControl(card, appearance, "全屏展开菜单", UiPreferences.MENU);
+        opacityControl(card, appearance, "悬浮小窗", UiPreferences.WINDOW);
+        action(card, "恢复默认透明度", () -> {
+            appearance.edit().remove(UiPreferences.BALL).remove(UiPreferences.MENU).remove(UiPreferences.WINDOW).apply();
+            ViewGroup controls = (ViewGroup)pages.get("settings");
+            for (String key : new String[]{UiPreferences.BALL, UiPreferences.MENU, UiPreferences.WINDOW}) {
+                ((SeekBar)controls.findViewWithTag(key)).setProgress(100);
+            }
+        }, false);
+    }
+    private void opacityControl(LinearLayout parent, SharedPreferences appearance, String name, String key) {
+        TextView value = text(name + " · 不透明度 " + UiPreferences.percent(appearance, key) + "%", 15, INK); parent.addView(value);
+        SeekBar slider = new SeekBar(a); slider.setTag(key); slider.setContentDescription(name + "不透明度");
+        slider.setMin(UiPreferences.MIN_OPACITY); slider.setMax(100); slider.setProgress(UiPreferences.percent(appearance, key));
+        parent.addView(slider, new LinearLayout.LayoutParams(-1, dp(48)));
+        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onStartTrackingTouch(SeekBar bar) { }
+            public void onStopTrackingTouch(SeekBar bar) { }
+            public void onProgressChanged(SeekBar bar, int progress, boolean user) {
+                value.setText(name + " · 不透明度 " + progress + "%"); appearance.edit().putInt(key, progress).apply();
+            }
+        });
+    }
     private void buildTools() {
         LinearLayout body = screen("tools", "工具", null);
         String[][] tools = {{"scan", "端口扫描", "在指定 IP 和端口范围中查找可连接端口"}, {"shell", "ADB Shell", "执行命令并查看返回结果"}, {"files", "文件传输", "通过系统文件选择器上传和下载"}};
@@ -188,18 +218,18 @@ final class MainUi {
         if ("pair".equals(name)) pairHost.setText(a.host.getText());
         if ("scan".equals(name)) ((EditText)pages.get("scan").findViewWithTag("scanHost")).setText(a.host.getText());
         content.setDisplayedChild(new ArrayList<>(pages.keySet()).indexOf(name));
-        String tab = Arrays.asList("connect", "pair").contains(name) ? "connect" : Arrays.asList("devices", "credential").contains(name) ? "devices" : "tools";
+        String tab = Arrays.asList("connect", "pair", "settings").contains(name) ? "connect" : Arrays.asList("devices", "credential").contains(name) ? "devices" : "tools";
         for (Map.Entry<String, Button> item : tabs.entrySet()) {
             boolean selected = item.getKey().equals(tab); item.getValue().setTextColor(selected ? Color.WHITE : MUTED);
             item.getValue().setBackground(background(selected ? BLUE : Color.WHITE, 0, 10, a)); item.getValue().setStateListAnimator(null);
             item.getValue().setSelected(selected);
         }
-        heading.setText("devices".equals(tab) ? "设备与凭据" : "tools".equals(tab) ? "ADB 工具" : "Scrcpy Android");
+        heading.setText("settings".equals(name) ? "设置" : "devices".equals(tab) ? "设备与凭据" : "tools".equals(tab) ? "ADB 工具" : "Scrcpy Android");
         if ("devices".equals(name)) devices();
         a.getWindow().getDecorView().clearFocus();
         ((android.view.inputmethod.InputMethodManager)a.getSystemService(Context.INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(content.getWindowToken(), 0);
     }
-    boolean back() { if (Arrays.asList("pair", "scan", "shell", "files", "credential").contains(page)) { select("pair".equals(page) ? "connect" : "credential".equals(page) ? "devices" : "tools"); return true; } return false; }
+    boolean back() { if (Arrays.asList("pair", "settings", "scan", "shell", "files", "credential").contains(page)) { select(Arrays.asList("pair", "settings").contains(page) ? "connect" : "credential".equals(page) ? "devices" : "tools"); return true; } return false; }
     String page() { return page; }
     void message(String message) {
         a.status.setVisibility(message.startsWith("ADB 已连接") ? View.GONE : View.VISIBLE);

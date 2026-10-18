@@ -24,6 +24,14 @@ final class ControlProtocol {
     static byte[] key(int action, int code, int repeat, int metaState) {
         return packet(out -> { out.writeByte(0); out.writeByte(action); out.writeInt(code); out.writeInt(repeat); out.writeInt(metaState); });
     }
+    static byte[] keyGroup(int action, int... codes) {
+        return packet(out -> {
+            for (int i = 0; i < codes.length; i++) {
+                int code = codes[action == 1 ? codes.length - 1 - i : i];
+                out.write(key(action, code));
+            }
+        });
+    }
     static byte[] clipboard(long sequence, String text, boolean paste) {
         byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
         if (bytes.length > (1 << 18) - 14) throw new IllegalArgumentException("剪贴板文本超过 256 KiB");

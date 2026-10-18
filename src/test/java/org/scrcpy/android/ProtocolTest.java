@@ -6,6 +6,13 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 
 public class ProtocolTest {
+    @Test public void powerChordIsOnePacketAndReleasesInReverseOrder() throws Exception {
+        DataInputStream down = new DataInputStream(new ByteArrayInputStream(ControlProtocol.keyGroup(0, 26, 25)));
+        DataInputStream up = new DataInputStream(new ByteArrayInputStream(ControlProtocol.keyGroup(1, 26, 25)));
+        for (int code : new int[]{26, 25}) { assertEquals(0, down.readUnsignedByte()); assertEquals(0, down.readUnsignedByte()); assertEquals(code, down.readInt()); down.skipBytes(8); }
+        for (int code : new int[]{25, 26}) { assertEquals(0, up.readUnsignedByte()); assertEquals(1, up.readUnsignedByte()); assertEquals(code, up.readInt()); up.skipBytes(8); }
+        assertEquals(-1, down.read()); assertEquals(-1, up.read());
+    }
     @Test public void hardwareKeysPreserveHoldRepeatAndMetaState() throws Exception {
         DataInputStream in = new DataInputStream(new ByteArrayInputStream(ControlProtocol.key(0, 24, 3, 1)));
         assertEquals(0, in.readUnsignedByte()); assertEquals(0, in.readUnsignedByte());

@@ -36,7 +36,7 @@ final class MicrophoneForwarder implements AutoCloseable {
     volatile long sentBytes;
     private volatile String inputJar, scrcpyJar;
     MicrophoneForwarder(Context context, RuntimeState runtime, String targetPackage, Listener listener) {
-        this(context, runtime, targetPackage, listener, new LocalMicrophone());
+        this(context, runtime, targetPackage, listener, new LocalMicrophone(context));
     }
     MicrophoneForwarder(Context context, RuntimeState runtime, String targetPackage, Listener listener, PcmSource source) {
         if (!validPackage(targetPackage)) throw new IllegalArgumentException("请输入有效的被控应用包名");
@@ -152,12 +152,16 @@ final class MicrophoneForwarder implements AutoCloseable {
         }
     }
     private static final class LocalMicrophone implements PcmSource {
+        private final Context context;
         private AudioRecord record;
         private AcousticEchoCanceler echo;
         private NoiseSuppressor noise;
         private boolean closed;
+        LocalMicrophone(Context context) { this.context = context.getApplicationContext(); }
         @Override public synchronized void start() throws IOException {
             if (closed) throw new IOException("Microphone closed");
+            if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                throw new IOException("主控麦克风权限不可用，请重新授予录音权限");
             int minimum = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
             if (minimum <= 0) throw new IOException("主控不支持 48 kHz 单声道录音");
             record = new AudioRecord.Builder().setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)

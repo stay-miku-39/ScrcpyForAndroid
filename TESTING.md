@@ -1,4 +1,71 @@
-# Validation — 2026-10-18
+# Validation — 2026-10-19
+
+## 0.4.0 power, window footer, native rotation and appearance
+
+Implemented in order, with each focused suite passing before the next feature:
+power → window footer → native orientation/remote panels → appearance settings.
+All four were then exercised together with the existing regression suites.
+The scrcpy submodule remains unchanged. Target stays Android 16 / API 36.
+
+Current AVD roles are controller `emulator-5554` (Medium_Phone) and target
+`emulator-5556` (Medium_Phone_1), both Android 16 user builds. These are the same
+AVDs previously recorded below as 5556 and 5558. Current direct test endpoint is
+`10.0.2.17:5555`; saved wireless-debugging TLS endpoint is `10.0.2.17:41929`.
+
+| Check | Result / evidence |
+| --- | --- |
+| Root debug and instrumentation builds | PASS, API 37 compile override with targetSdk 36 |
+| Application unit tests | 21 passed: protocol, microphone target validation, window geometry and four-way orientation parsing |
+| Vendored ADB tests | 25 passed; 2 physical USB integration/throughput tests skipped because no physical USB device is attached |
+| Android Lint | 0 errors, 26 warnings; no blanket suppression/baseline added |
+| `uiStage power` | PASS, fullscreen short power/wake/long power/chord screenshot, floating short/long power, bounded release and actual target menu closure |
+| `uiStage window` | PASS, click shrink/enlarge, both corner drags, bounds/aspect, no target touch leakage, same-session fullscreen restore |
+| `uiStage rotation` | PASS, actual controller display rotation 0/90/180/270, persisted opt-out/re-enable, same session, remote notifications/quick settings/collapse, floating mode does not force controller direction |
+| `uiStage settings` | PASS, real overflow-menu navigation/back, minimum and persistence, full ball/main/power menu opacity, live overlay alpha, reset, unchanged identity/history/session |
+| `windowUi true` | PASS, identity, shell, SHA-256 file roundtrip, scan, video, non-silent audio, two-pointer input, bidirectional text clipboard, rotation, HOME, volume down/up/repeat, floating touch/roundtrip/close with ADB retained |
+| `mainUiOnly true` | PASS, main UI connect, nested navigation, fingerprint and saved IP/port/history |
+| Fresh wireless PIN + UI + TLS | PASS, obtained a new system pairing code, paired through the actual application page and connected to TLS port 41929 |
+| New-process saved TLS reconnect | PASS, identity, shell, file roundtrip and scan; no new PIN needed |
+| `microphoneOnly true` | PASS, deterministic PCM over independent ADB stream, cross-UID MIC/VOICE_COMMUNICATION input, physical-route restore, stalled-capture stop, concurrent video |
+
+Integration results use `INSTRUMENTATION_RESULT: result=PASS ...` and final
+`INSTRUMENTATION_CODE: -1`. Fullscreen and overlay screenshots were inspected.
+The final overlay uses a text power button because the emulator font did not
+contain the initially considered power glyph. Alpha applies to the entire overlay,
+including the decoded video, while touch hit areas remain in place.
+
+The rotation runs exposed an existing fast-shell race in vendored ADB:
+an accepted OKAY followed immediately by CLSE could be mistaken for rejection.
+That is corrected along with atomic concurrent stream-ID allocation. Loopback
+tests cover 64 concurrent short commands, EOF, real rejection and existing flow
+control. Lint also identified a missing local microphone permission check;
+capture now checks permission again immediately before AudioRecord creation.
+This iteration's microphone integration uses a deterministic source; live
+controller permission-denial/grant/stop checks below remain the 0.3.0 evidence.
+
+The footer test explicitly leaves the legal minimum width before asserting a
+shrink, and restores saved geometry. Native rotation and popup animations settle
+before real menu taps and screenshots. Power tests check actual menu visibility
+and release before dismissing the target system menu; they temporarily set and
+then restore `power_button_long_press`. Temporary rotation settings are restored.
+Screenshot preview and screen-on/dialog animations finish before the next
+independent power action; AWAKE alone is earlier than a completed display-on.
+Test activities and streams are stopped after checks.
+
+Remaining physical checks: Android 16 controller with Android 15 target, OEM
+power/volume+ chord behavior, lock-screen credentials, prolonged natural sleep,
+tablet/foldable orientation policy, USB/OTG hardware/permissions/power, and actual
+duplex communication audio. Ordinary immersive mode still permits system edge
+gestures to reveal controller bars; remote panel buttons reduce the conflict.
+Media clipboard and universal camera input replacement remain unimplemented.
+
+The 26 Lint warnings include existing dependency/target-version hints, vendored
+TLS-library checks, accessibility/RTL/style suggestions and programmatic view
+construction. They have not been represented as zero-warning validation.
+Detailed acceptance requirements, test commands, manual cases and refactoring
+invariants are in [docs/requirements-and-regression.md](docs/requirements-and-regression.md).
+Local build/test logs and UI images are in ignored
+`test-results-local/ui-2026-10-19/`.
 
 ## 0.3.0 experimental microphone forwarding
 

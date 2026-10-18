@@ -116,6 +116,36 @@ public class AdbStreamTest {
         return data;
     }
 
+    @Test(timeout = 30_000)
+    public void concurrentShortCommandsKeepUniqueStreamsAndAcceptImmediateEof() throws Exception {
+        connectAndOpen(AdbProtocol.A_VERSION_SKIP_CHECKSUM, 4096);
+        java.util.List<Future<AdbStream>> commands = new java.util.ArrayList<>();
+        for (int i = 0; i < 64; i++) commands.add(mExecutor.submit(() -> mConnection.open("shell:true")));
+        java.util.Set<Integer> ids = new java.util.HashSet<>();
+        for (int i = 0; i < commands.size(); i++) {
+            AdbProtocol.Message open = mServer.expect(AdbProtocol.A_OPEN);
+            assertTrue("Concurrent stream IDs must be unique", ids.add(open.arg0));
+            byte[] okay = AdbProtocol.generateReady(SERVER_ID + i + 1, open.arg0);
+            byte[] close = AdbProtocol.generateClose(SERVER_ID + i + 1, open.arg0);
+            ByteArrayOutputStream pair = new ByteArrayOutputStream(); pair.write(okay); pair.write(close);
+            mServer.send(pair.toByteArray());
+        }
+        for (Future<AdbStream> command : commands) {
+            AdbStream stream = command.get(10, TimeUnit.SECONDS);
+            assertEquals(-1, stream.openInputStream().read()); stream.close();
+        }
+    }
+
+    @Test(timeout = 30_000)
+    public void closeWithoutEstablishingOkayStillRejectsOpen() throws Exception {
+        connectAndOpen(AdbProtocol.A_VERSION_SKIP_CHECKSUM, 4096);
+        Future<AdbStream> rejected = mExecutor.submit(() -> mConnection.open("localabstract:missing"));
+        AdbProtocol.Message open = mServer.expect(AdbProtocol.A_OPEN);
+        mServer.sendClse(0, open.arg0);
+        try { rejected.get(10, TimeUnit.SECONDS); fail("Rejected service must not open"); }
+        catch (ExecutionException expected) { assertTrue(expected.getCause() instanceof java.net.ConnectException); }
+    }
+
     private static void readFully(InputStream in, byte[] buffer, int offset, int length) throws IOException {
         int off = offset;
         int remaining = length;

@@ -27,6 +27,9 @@ public class SmokeInstrumentation extends Instrumentation {
             Identity again = new Identity(context);
             check(Arrays.equals(again.certificate.getPublicKey().getEncoded(), new Identity(context).certificate.getPublicKey().getEncoded()), "Identity must survive reload");
             String host = args.getString("host", "10.0.2.2"); int port = Integer.parseInt(args.getString("port", "15558"));
+            if (args.containsKey("uiStage")) {
+                result.putString("result", UiControlsSmoke.run(this, context, runtime, host, port, args.getString("uiStage"))); return;
+            }
             if ("true".equals(args.getString("microphoneOnly"))) {
                 result.putString("result", MicrophoneSmoke.run(this, context, runtime, host, port)); return;
             }

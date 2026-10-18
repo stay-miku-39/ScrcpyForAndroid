@@ -22,6 +22,7 @@ import java.security.interfaces.RSAPublicKey;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.security.auth.DestroyFailedException;
 
@@ -48,7 +49,7 @@ public class AdbConnection implements Closeable {
     /**
      * The last allocated local stream ID. The ID chosen for the next stream will be this value + 1.
      */
-    private int mLastLocalId;
+    private final AtomicInteger mLastLocalId = new AtomicInteger();
 
     /**
      * The backend thread that handles responding to ADB packets.
@@ -185,7 +186,6 @@ public class AdbConnection implements Closeable {
         this.mMaxData = AdbProtocol.getMaxData(api);
         this.mKeyPair = Objects.requireNonNull(keyPair);
         this.mOpenedStreams = new ConcurrentHashMap<>();
-        this.mLastLocalId = 0;
         this.mConnectionThread = createConnectionThread();
     }
 
@@ -480,7 +480,7 @@ public class AdbConnection implements Closeable {
     @NonNull
     AdbStream open(@NonNull String destination, long openTimeoutMs)
             throws IOException, InterruptedException, AdbPairingRequiredException {
-        int localId = ++mLastLocalId;
+        int localId = mLastLocalId.incrementAndGet();
 
         if (!mConnectAttempted) {
             throw new IllegalStateException("connect() must be called first");
@@ -508,7 +508,9 @@ public class AdbConnection implements Closeable {
         }
 
         // Check if the OPEN request was rejected
-        if (stream.isClosed()) {
+        // A short shell command may finish (OKAY then CLSE) before the opener
+        // is scheduled again. That is an accepted stream with EOF, not rejection.
+        if (stream.isClosed() && !stream.isOpened()) {
             mOpenedStreams.remove(localId);
             throw new ConnectException("Stream open actively rejected by remote peer.");
         }

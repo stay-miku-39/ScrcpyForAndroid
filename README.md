@@ -4,6 +4,17 @@
 被控端运行 `scrcpy/` 子模块中的 scrcpy **5.0.1** 服务端，支持 Android 15/16；不需要安装主控 APK、root 或辅助无障碍服务。
 每次会话通过 ADB 上传服务端，以 shell 身份启动，结束时清理。
 
+## 0.4.0 电源、小窗与界面设置
+
+- 全屏悬浮球 → **电源与唤醒**，提供唤醒、点按/长按电源，以及一键电源 + 音量组合键。小窗顶部右侧“电源”支持点按和长按。
+- 小窗底部新增独立操作栏：左右 **− / +** 可点击或拖动缩放，中间 **全屏** 复用当前会话恢复；远端画面始终等比显示。
+- 全屏默认跟随被控屏幕方向，使用 Android 原生 Activity 旋转，支持四个方向；球菜单可关闭并保存。小窗保持原有方向行为。
+- 球菜单增加 **通知栏 / 快捷设置 / 收起通知**，操作被控端面板。本机使用沉浸模式，系统边缘手势仍可能唤出本机系统栏。
+- 主界面右上角 ⋮ → **设置**，可分别调整悬浮球、展开菜单和整个小窗的不透明度（20–100%），自动保存并支持恢复默认；小窗实时生效。
+
+电源长按与组合键的系统动作由被控 ROM 决定；可以唤醒熄屏设备，不能启动已经关机的设备。
+详细需求、验收步骤、实体机清单和重构约束见 [docs/requirements-and-regression.md](docs/requirements-and-regression.md)。
+
 ## 0.3.0 实验麦克风转发
 
 全屏悬浮球增加 **转发麦克风 / 停止麦克风**。选择被控应用并授予主控录音权限后，
@@ -21,7 +32,7 @@
 - 凭据页可查看、复制本机 SHA-256 公钥指纹。沿用 0.1.0 的同一加密身份；升级不会自动重置密钥或清除配对。
 - 全屏控制隐藏系统栏和固定工具栏，仅保留一个可拖动悬浮球。点击展开返回、主页、最近任务、音量、旋转、剪贴板、小窗与退出操作。
 - 默认将全屏下音量实体键的按下、长按重复、松开转发给被控端，可在悬浮球菜单中关闭。切换窗口/离开全屏会释放尚未松开的键。主控端返回手势操作远程返回；退出请使用球菜单。
-- **可触控悬浮小窗**支持在其他应用上方显示，拖动顶部移动，拖动底部调整大小。小窗内没有操作菜单，也不拦截本机音量键；只保留基本远程触控。
+- **可触控悬浮小窗**支持在其他应用上方显示，拖动顶部移动，底栏左右缩放、中间恢复全屏。小窗内没有操作菜单，也不拦截本机音量键；提供基本远程触控及顶部电源按钮。
 - 点击小窗通知，或在设备页点击“全屏控制”，可恢复全屏；通知和设备页均可关闭小窗。关闭投屏仍保留 ADB 连接。
 - 已建立会话的全屏/小窗往返复用 ADB、服务端、音视频通道，只切换解码输出 Surface。
 
@@ -94,6 +105,7 @@ ScrcpyForAndroid/
 ├── src/inputServer/             # 独立的 ADB shell 输入接收源码
 ├── vendor/adb/                  # 固定版本的 LibADB 及本地适配
 ├── scrcpy/                      # 独立 Git 子模块，锁定上游 5.0.1 提交
+├── docs/                        # 详细需求、回归验收与重构约束
 ├── README.md
 └── TESTING.md
 ```
@@ -145,27 +157,28 @@ Debug APK 支持实体机排查；正式分发时请自行配置发布签名。
 
 ```powershell
 .\gradlew.bat -PandroidCompileSdk=37 :assembleDebug :assembleDebugAndroidTest
+& C:\Software\adb\adb.exe -s emulator-5554 install -r build/outputs/apk/debug/ScrcpyForAndroid-debug.apk
+& C:\Software\adb\adb.exe -s emulator-5554 install -r build/outputs/apk/androidTest/debug/ScrcpyForAndroid-debug-androidTest.apk
 & C:\Software\adb\adb.exe -s emulator-5556 install -r build/outputs/apk/debug/ScrcpyForAndroid-debug.apk
 & C:\Software\adb\adb.exe -s emulator-5556 install -r build/outputs/apk/androidTest/debug/ScrcpyForAndroid-debug-androidTest.apk
-& C:\Software\adb\adb.exe -s emulator-5558 install -r build/outputs/apk/debug/ScrcpyForAndroid-debug.apk
-& C:\Software\adb\adb.exe -s emulator-5558 install -r build/outputs/apk/androidTest/debug/ScrcpyForAndroid-debug-androidTest.apk
 
 # IP/端口须替换成当前被控模拟器显示的值；首次可增加 -e pairPort 端口 -e pin 六位配对码。
-& C:\Software\adb\adb.exe -s emulator-5556 shell am instrument -w -e host 10.0.2.17 -e port 35397 org.scrcpy.android.test/org.scrcpy.android.SmokeInstrumentation
+& C:\Software\adb\adb.exe -s emulator-5554 shell am instrument -w -e host 10.0.2.17 -e port 5555 org.scrcpy.android.test/org.scrcpy.android.SmokeInstrumentation
 ```
 
 集成测试会在指定目标清空 Logcat、写入并删除 `/sdcard/Download/scrcpy-smoke.bin`、启动测试页面、临时锁定屏幕方向并恢复。
 仅对专用测试设备运行。较新模拟器支持在其共享网络内直接连接；如本地模拟器网络隔离，需要使用模拟器网络转发。
 加 `-e connectOnly true` 可只验证连接、身份、Shell、文件和扫描。
 加 `-e mainUiOnly true` 可验证连接、分类导航、凭据详情和设备记录保存。
+新增专项使用 `-e uiStage power`、`window`、`rotation` 或 `settings`，每次只运行一组；统一回归使用 `-e windowUi true`，麦克风使用 `-e microphoneOnly true`。详见 docs 中的验收矩阵。
 
 测试小窗和实体键前，仅对专用主控模拟器授予测试权限并确认全屏说明，然后运行：
 
 ```powershell
-& C:\Software\adb\adb.exe -s emulator-5556 shell appops set org.scrcpy.android SYSTEM_ALERT_WINDOW allow
-& C:\Software\adb\adb.exe -s emulator-5556 shell pm grant org.scrcpy.android android.permission.POST_NOTIFICATIONS
-& C:\Software\adb\adb.exe -s emulator-5556 shell settings put secure immersive_mode_confirmations confirmed
-& C:\Software\adb\adb.exe -s emulator-5556 shell am instrument -w -e host 10.0.2.17 -e port 41929 -e windowUi true org.scrcpy.android.test/org.scrcpy.android.SmokeInstrumentation
+& C:\Software\adb\adb.exe -s emulator-5554 shell appops set org.scrcpy.android SYSTEM_ALERT_WINDOW allow
+& C:\Software\adb\adb.exe -s emulator-5554 shell pm grant org.scrcpy.android android.permission.POST_NOTIFICATIONS
+& C:\Software\adb\adb.exe -s emulator-5554 shell settings put secure immersive_mode_confirmations confirmed
+& C:\Software\adb\adb.exe -s emulator-5554 shell am instrument -w -e host 10.0.2.17 -e port 5555 -e windowUi true org.scrcpy.android.test/org.scrcpy.android.SmokeInstrumentation
 ```
 
 实体机请通过应用内权限引导操作，无需执行这些测试权限命令。
@@ -175,8 +188,8 @@ Debug APK 支持实体机排查；正式分发时请自行配置发布签名。
 在右上角更多菜单或“工具 → 连接与诊断”点击“导出调试日志”。也可采集主控模拟器：
 
 ```powershell
-& C:\Software\adb\adb.exe -s emulator-5556 logcat -v threadtime -s ScrcpyAndroid AdbConnection PairingConnectionCtx AndroidRuntime
-& C:\Software\adb\adb.exe -s emulator-5556 shell run-as org.scrcpy.android cat files/debug.log
+& C:\Software\adb\adb.exe -s emulator-5554 logcat -v threadtime -s ScrcpyAndroid AdbConnection PairingConnectionCtx AndroidRuntime
+& C:\Software\adb\adb.exe -s emulator-5554 shell run-as org.scrcpy.android cat files/debug.log
 ```
 
 反馈时附：主控/被控型号和 Android 版本、连接方式、问题出现步骤、日志、画面或声音表现。
