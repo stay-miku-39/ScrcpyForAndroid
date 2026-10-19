@@ -59,18 +59,15 @@ bundleScrcpyServer
 
 `scrcpy/` 来源 `https://github.com/Genymobile/scrcpy.git`，固定 5.0.1 / `a60891aea193d92e7e5c3942700eca63f9d19a5f`。`settings.gradle` 将 `:server` 的 projectDir 指向子模块，同时选择根目录的适配构建文件，输出写入根 `build/`。新克隆使用 `--recurse-submodules` 或执行 `git submodule update --init --recursive`。
 
-原重组保留了嵌套 Git 历史。曾在 Windows 上尝试 `git submodule absorbgitdirs` 遇到目录改名权限问题；这不是运行或构建的前提。不要仅为转换 `.git` 存放形式重复迁移/删除工作目录；先看实际 Git 与子模块状态。
-
 当前固定构建配置：
 
 | 项目 | 值 |
 | --- | --- |
 | 主控 applicationId / namespace | `org.scrcpy.android` |
 | 主控 min / target / 默认 compile SDK | 30 / 36 / 36 |
-| 本机 compile 覆盖 | `-PandroidCompileSdk=37`，target 仍为 36 |
 | 可选麦克风接收模块 min SDK | 34 |
 | Gradle Wrapper / AGP | 9.3.1 / 9.1.0 |
-| Java 源码/目标级别 | Java 8；构建使用支持 AGP 的 Android Studio JBR（JDK 21+） |
+| Java 源码/目标级别 | Java 8；构建使用 JDK 21 或以上 |
 | AndroidX Core / Activity | 1.15.0 / 1.9.3 |
 | Material Components | 1.13.0，仅小窗使用独立主题 |
 | BouncyCastle / JUnit | 1.84 / 4.13.2 |
@@ -185,29 +182,27 @@ flowchart LR
 
 其他未完成/未承诺：媒体剪贴板、自动重连、精确音画同步/漂移补偿、后台或小窗麦克风、通用摄像头替换、普通应用彻底拦截本机系统栏、彻底关机设备远程开机。长时间自然熄屏后的电源控制已提供，不代表新增了远端永不熄屏策略。
 
-## 8. 环境、命令与设备角色
+## 8. 通用构建与测试准备
 
-以下是原开发机的可用配置，不应硬编码为产品逻辑：Windows PowerShell；ADB `C:\Software\adb\adb.exe`；JBR `C:\Program Files\Android\Android Studio\jbr`；SDK `C:\Users\miku\AppData\Local\Android\Sdk`。SDK 已初始化，项目本地 `local.properties` 指向它，已安装平台目录曾为 `android-37.0`；不要为匹配教程擅自改名。
+准备 JDK 21 或以上、Android SDK API 36 和 platform-tools。通过 `JAVA_HOME` 配置 JDK，通过 `ANDROID_HOME` 或未提交的 `local.properties` 中 `sdk.dir` 配置 SDK；使用仓库的 Gradle Wrapper。
 
-```powershell
-$env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
-$env:GRADLE_USER_HOME = "$PWD\.gradle-local"
-.\gradlew.bat -PandroidCompileSdk=37 :assembleDebug
-.\gradlew.bat -PandroidCompileSdk=37 :assembleDebugAndroidTest
+```shell
+./gradlew :assembleDebug
+./gradlew :assembleDebugAndroidTest
 ```
 
-产物：`build/outputs/apk/debug/ScrcpyForAndroid-debug.apk` 与 `build/outputs/apk/androidTest/debug/ScrcpyForAndroid-debug-androidTest.apk`。SDK XML、AGP 对 compileSdk 37 的提示和 JBR 对 Java 8 目标的提示曾伴随成功构建；与真正缺失 SDK/JDK 区分。用户明确要求实际环境故障暂停，由其手动处理，不自行换工具链/重建虚拟机。
+Windows 使用 `gradlew.bat` 执行相同任务。默认 compileSdk / targetSdk 均为 36；可选属性 `-PandroidCompileSdk=<API>` 只覆盖 compileSdk，不改变 targetSdk，覆盖时应自行核对工具链兼容性。
 
-最近已验证主控 Medium_Phone / `emulator-5554`、被控 Medium_Phone_1 / `emulator-5556`，均 Android 16。它们是更早 5556 / 5558 的同一组 AVD，因关闭旧 AVD 而重新编号。最近直连 IP/端口 `10.0.2.17:5555`，无线调试 TLS 端口曾为 41929。**所有这些都是历史现场值。**
+产物：`build/outputs/apk/debug/ScrcpyForAndroid-debug.apk` 与 `build/outputs/apk/androidTest/debug/ScrcpyForAndroid-debug-androidTest.apk`。
 
-```powershell
-& C:\Software\adb\adb.exe devices -l
-& C:\Software\adb\adb.exe -s emulator-5554 emu avd name
-& C:\Software\adb\adb.exe -s emulator-5556 emu avd name
-& C:\Software\adb\adb.exe -s emulator-5556 shell ip -4 addr show wlan0
+设备测试使用明确指定的主控和被控设备。先通过 `adb devices -l` 核对角色与 Android 版本，再读取被控端当次无线调试地址、连接端口与配对信息。以下尖括号内容均为待替换参数，不能原样执行：
+
+```text
+adb -s <主控序列号> shell getprop ro.build.version.sdk
+adb -s <被控序列号> shell getprop ro.build.version.sdk
 ```
 
-先确认角色，再替换下面命令中的示例编号/地址。曾出现额外真实设备在线，不可用无 `-s` 的命令或把所有在线设备当测试目标。不为只写文档而启动 ADB、安装 APK、断开连接或修改设备设置。
+所有设备操作明确使用 `-s`，不能把所有在线设备当测试目标。不为只写文档而启动 ADB、安装 APK、断开连接或修改设备设置。
 
 ## 9. 验证选择与真实证据
 
@@ -226,16 +221,17 @@ $env:GRADLE_USER_HOME = "$PWD\.gradle-local"
 
 不要为局部可逆 UI 修改机械添加复述实现的单元测试或重跑所有功能；也不要在改变共享协议/所有权后只看编译。用户指定测试范围时遵守其范围，发现直接关联风险再说明并验证。
 
-```powershell
+```shell
 # 按需要选择任务，不要求每次全跑。
-.\gradlew.bat -PandroidCompileSdk=37 :testDebugUnitTest
-.\gradlew.bat -PandroidCompileSdk=37 :adb-library:testDebugUnitTest
-.\gradlew.bat -PandroidCompileSdk=37 :lintDebug
+./gradlew :testDebugUnitTest
+./gradlew :adb-library:testDebugUnitTest
+./gradlew :lintDebug
+```
 
-# 示例：仅小窗专项。必须先在明确的专用设备安装所需 APK、授予测试权限。
-& C:\Software\adb\adb.exe -s emulator-5554 shell am instrument -w `
-  -e host 10.0.2.17 -e port 5555 -e uiStage window `
-  org.scrcpy.android.test/org.scrcpy.android.SmokeInstrumentation
+示例：仅小窗专项。先在明确的专用设备安装所需 APK、授予测试权限，再替换占位参数：
+
+```text
+adb -s <主控序列号> shell am instrument -w -e host <被控IP> -e port <被控ADB连接端口> -e uiStage window org.scrcpy.android.test/org.scrcpy.android.SmokeInstrumentation
 ```
 
 其余参数：`uiStage power/rotation/settings`（每次一个）、`-e windowUi true`（原有完整远控+窗口）、`-e mainUiOnly true`、`-e connectOnly true`、`-e microphoneOnly true`；新 PIN 可配合 `-e pairPort` / `-e pin`，错误 PIN 路径使用 `-e expectPairFailure true`（不要同时设置 `mainUiOnly true`）。完整准备/安装示例见根 README，勿把临时 PIN 写进共享文档或日志。
@@ -262,24 +258,23 @@ Android 16 控制 Android 15 实体机、Android OTG 物理链路、OEM 电源�
 - **最小边界**：已在最小尺寸时缩小不应变化。0.4.0 的点击加减测试已经过期；0.4.1 测试使用真实拖动且检查轻触不缩放。
 - **流式读取**：OKAY 后马上 CLSE 可能是零输出命令成功结束；不能又改回“closed 就一定拒绝”。对应并发流和 EOF 回归已有。
 - **截图文件**：重复 `adb pull <目录> <已存在目录>` 可能多嵌套一层，别误读旧截图。按完整文件名取回，保存原图再检查；不要用编辑过的示意图充当实际 UI。
-- **Windows**：用 PowerShell 的原生命令和 `-LiteralPath`，避免混合 cmd 删除/移动。Shell/PR 文本不要用不安全的字符串拼接或让 `$()` 在主机意外执行；目标 Shell 值使用合适转义。
-- **工具权限**：本机沙箱对 Gradle 缓存、ADB daemon、Git metadata 的限制可能需要正常授权工具执行，不要先把沙箱失败判作 SDK 损坏，也不要为绕过限制删缓存/重建 AVD。
+- **Shell 参数**：目标 Shell 值使用合适转义，避免字符串拼接导致命令注入；文件传输使用 ADB sync，不把路径拼入 Shell。
 
 ### 10.2 日志与反馈
 
 主界面更多菜单/工具页可导出日志；Logcat 标签 `ScrcpyAndroid`。内部 `files/debug.log` 超过约 2 MiB 轮转为 `debug.previous.log`；LogProvider 通过临时 URI 分享。调试 APK 可读取：
 
-```powershell
-& C:\Software\adb\adb.exe -s emulator-5554 logcat -v threadtime -s ScrcpyAndroid AdbConnection AndroidRuntime
-& C:\Software\adb\adb.exe -s emulator-5554 shell run-as org.scrcpy.android cat files/debug.log
+```text
+adb -s <主控序列号> logcat -v threadtime -s ScrcpyAndroid AdbConnection AndroidRuntime
+adb -s <主控序列号> shell run-as org.scrcpy.android cat files/debug.log
 ```
 
 需要收集主控/被控型号和 Android 版本、连接方式、复现步骤、相关开关/透明度、目标系统电源行为、截图和阶段日志。日志不应新增 PIN、私钥、剪贴板正文或音频数据。尤其不要清空用户的真机日志再开始排查。
 
-本地忽略证据目录包括 `test-results-local/input-sharing/`、`reorganization/`、`quick-control/`、`ui-2026-10-19/`、`window-0.4.1/`；新 agent 不应假定这些在新克隆中存在。不要覆盖前一任务的证据。
+测试摘要和验证边界写入 `TESTING.md`，原始日志和截图按任务保存在被忽略的 `test-results-local/` 中，不覆盖已有证据，也不假定新检出中包含这些文件。
 
 ### 10.3 交付产物与维护
 
-此前 debug APK 保存在忽略的 `dist/`，当前文件 `ScrcpyForAndroid-0.4.1-debug.apk`，SHA-256 为 `9390284f91f980f133ba4fd6ceaacba2539c25bb3036f738da76e5decde76490`。该哈希只对应历史交付文件，不保证未来重建逐字节一致。校验清单为 `dist/SHA256SUMS.txt`；旧产物需保留，正式分发需自行配置发布签名。
+debug APK 按 `dist/ScrcpyForAndroid-<版本>-debug.apk` 命名，校验清单为 `dist/SHA256SUMS.txt`。产物目录被 Git 忽略，每次交付按实际文件生成校验值并保留旧产物；正式分发需自行配置发布签名。
 
 代码交付时按需求更新版本/产物，并同步需求、实际测试和本接手文档；仅文档交付不更新 APK/版本。主仓库和子模块分别检查状态，保留用户工作，写本地提交不自动推送/发布。未来若改动协议、持久格式、SDK 目标或全屏/小窗所有权，必须重新评估兼容和回归范围，不能复用旧的“通过”结论。

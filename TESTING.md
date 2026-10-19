@@ -2,8 +2,8 @@
 
 ## 0.4.1 focused floating-window refinement
 
-Only the changed floating UI was exercised on controller `emulator-5554` and
-target `emulator-5556`, both Android 16. The existing ADB/control/audio/video
+Only the changed floating UI was exercised on dedicated controller and target
+emulators, both Android 16. The existing ADB/control/audio/video
 implementation and scrcpy submodule were not modified. No broader pairing,
 file, scan, microphone or full regression suite is claimed for this patch.
 
@@ -39,7 +39,6 @@ INSTRUMENTATION_RESULT: result=PASS equal bars, rounded clipping, icon power/ful
 INSTRUMENTATION_CODE: -1
 ```
 
-Logs/screenshots: ignored `test-results-local/window-0.4.1/`.
 Updated requirements: [docs/requirements-and-regression.md](docs/requirements-and-regression.md).
 Component/icon sources and license: [docs/ui-assets.md](docs/ui-assets.md).
 
@@ -50,14 +49,13 @@ power → window footer → native orientation/remote panels → appearance sett
 All four were then exercised together with the existing regression suites.
 The scrcpy submodule remains unchanged. Target stays Android 16 / API 36.
 
-Current AVD roles are controller `emulator-5554` (Medium_Phone) and target
-`emulator-5556` (Medium_Phone_1), both Android 16 user builds. These are the same
-AVDs previously recorded below as 5556 and 5558. Current direct test endpoint is
-`10.0.2.17:5555`; saved wireless-debugging TLS endpoint is `10.0.2.17:41929`.
+Validation used two dedicated Android 16 / API 36 user-build emulators in
+controller and target roles. TCP and wireless-debugging TLS connections were
+both exercised; addresses and ports must be obtained from the current devices.
 
 | Check | Result / evidence |
 | --- | --- |
-| Root debug and instrumentation builds | PASS, API 37 compile override with targetSdk 36 |
+| Root debug and instrumentation builds | PASS, targetSdk 36 |
 | Application unit tests | 21 passed: protocol, microphone target validation, window geometry and four-way orientation parsing |
 | Vendored ADB tests | 25 passed; 2 physical USB integration/throughput tests skipped because no physical USB device is attached |
 | Android Lint | 0 errors, 26 warnings; no blanket suppression/baseline added |
@@ -67,7 +65,7 @@ AVDs previously recorded below as 5556 and 5558. Current direct test endpoint is
 | `uiStage settings` | PASS, real overflow-menu navigation/back, minimum and persistence, full ball/main/power menu opacity, live overlay alpha, reset, unchanged identity/history/session |
 | `windowUi true` | PASS, identity, shell, SHA-256 file roundtrip, scan, video, non-silent audio, two-pointer input, bidirectional text clipboard, rotation, HOME, volume down/up/repeat, floating touch/roundtrip/close with ADB retained |
 | `mainUiOnly true` | PASS, main UI connect, nested navigation, fingerprint and saved IP/port/history |
-| Fresh wireless PIN + UI + TLS | PASS, obtained a new system pairing code, paired through the actual application page and connected to TLS port 41929 |
+| Fresh wireless PIN + UI + TLS | PASS, obtained a new system pairing code, paired through the actual application page and connected to the advertised TLS debugging port |
 | New-process saved TLS reconnect | PASS, identity, shell, file roundtrip and scan; no new PIN needed |
 | `microphoneOnly true` | PASS, deterministic PCM over independent ADB stream, cross-UID MIC/VOICE_COMMUNICATION input, physical-route restore, stalled-capture stop, concurrent video |
 
@@ -107,8 +105,6 @@ TLS-library checks, accessibility/RTL/style suggestions and programmatic view
 construction. They have not been represented as zero-warning validation.
 Detailed acceptance requirements, test commands, manual cases and refactoring
 invariants are in [docs/requirements-and-regression.md](docs/requirements-and-regression.md).
-Local build/test logs and UI images are in ignored
-`test-results-local/ui-2026-10-19/`.
 
 ## 0.3.0 experimental microphone forwarding
 
@@ -118,8 +114,8 @@ The scrcpy submodule is unchanged. Build target remains Android 16 / API 36.
 - Root `:assembleDebug` and `:assembleDebugAndroidTest`: PASS.
 - `:testDebugUnitTest --tests org.scrcpy.android.MicrophoneTargetTest`: 5 PASS
   (package validation, exact UID matching, system-UID exclusion, activity dump parsing).
-- `microphoneOnly` instrumentation on controller `emulator-5556` and target
-  `emulator-5558`, both Android 16 `user` builds: PASS.
+- `microphoneOnly` instrumentation on dedicated controller and target
+  emulators, both Android 16 `user` builds: PASS.
 - A deterministic 1 kHz PCM source used the production ADB forwarding channel.
   A separate-UID target app recorded it through normal MIC and
   VOICE_COMMUNICATION AudioRecords, both routed to device type 25.
@@ -151,7 +147,6 @@ INPUT_SHARING.md. Android 14/15 physical devices, actual communication apps,
 duplex echo/quality, background/floating capture and camera injection were not
 claimed as verified. Audio is not persisted; the deterministic-source test does
 not capture the real controller microphone. UI capture tests use the emulator.
-Logs and UI snapshots are in the ignored `test-results-local/input-sharing/`.
 
 ## Repository layout migration — basic smoke only
 
@@ -161,11 +156,11 @@ is a clean Git submodule pinned to `a60891aea193d92e7e5c3942700eca63f9d19a5f`
 All 66 application and vendored ADB source files match their pre-move SHA-256
 hashes. No runtime behavior or UI was changed during this reorganization.
 
-- Root `:assembleDebug` with `-PandroidCompileSdk=37`: PASS; 85 tasks executed.
+- Root `:assembleDebug`: PASS; 85 tasks executed.
   The application still targets Android 16 / API 36.
 - Installed the resulting `build/outputs/apk/debug/ScrcpyForAndroid-debug.apk`
-  over the existing controller on `emulator-5556`.
-- Connected to `emulator-5558` using the existing saved wireless ADB identity,
+  over the existing controller application.
+- Connected to the target using the existing saved wireless ADB identity,
   including the normal device-property query: PASS, no new pairing.
 - Opened full-screen remote control using the bottom-right shortcut: PASS;
   the server starts, H.264 decoder reports its first rendered frame, and the
@@ -176,8 +171,6 @@ hashes. No runtime behavior or UI was changed during this reorganization.
 
 Only these basic checks were repeated. Pairing, USB/OTG, audio, multi-touch,
 clipboard, scanning, files and floating-window suites were not rerun.
-Build logs, XML snapshots, screenshot and target touch logs are retained locally
-in the ignored `test-results-local/reorganization/` directory.
 
 The older results below describe the previous `:android-client` module layout.
 Current task names and paths are documented in the root README.md.
@@ -224,9 +217,8 @@ OTG and OEM-specific window/permission policies still need physical-device check
 
 ## Original 0.1.0 baseline
 
-Environment: Windows, Android Studio bundled JBR 25, Gradle 9.3.1 / AGP 9.1,
-compileSdk 37 override, **targetSdk 36**. Two Android 16 / API 36 x86_64 emulators:
-controller `emulator-5556`, target `emulator-5558`.
+Validation used two dedicated Android 16 / API 36 x86_64 emulators as controller
+and target. The application uses **targetSdk 36**.
 
 ## Executed
 
@@ -284,3 +276,7 @@ data playback, not subjective listening quality or precise A/V synchronization.
 See README.md for build, device setup and test commands. The test APK is
 for dedicated test devices; its probe Activity and instrumentation are absent
 from the deliverable controller APK.
+
+Historical results describe the recorded releases, not a new run against the
+current build configuration. Raw logs and screenshots are task artifacts in the
+ignored `test-results-local/` directory; they are not required in a fresh checkout.

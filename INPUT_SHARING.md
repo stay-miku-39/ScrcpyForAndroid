@@ -11,7 +11,7 @@
 | 仅把声音/视频传到被控设备播放 | 不能代表输入替代；本次麦克风测试验证的是目标应用实际调用 AudioRecord 获取到转发数据 |
 
 Android 14 是本功能支持的最低被控版本，不代表每个 Android 14/15/16 ROM 都开放相同的系统路由能力。
-本机只有 Android 16 模拟器完成了运行验证；Android 14/15 真机及厂商系统仍需实测。
+已有运行验证覆盖 Android 16 模拟器；Android 14/15 真机及厂商系统仍需实测。
 
 ## 麦克风方案
 
@@ -82,16 +82,19 @@ Android 14 QPR1+ 的“用作 USB 摄像头”是另一个硬件路径：主控�
 
 ## 验证方法和证据
 
-专用设备：主控 `emulator-5556`、被控 `emulator-5558`，均为 Android 16 / API 36。
+验证使用两台专用 Android 16 / API 36 模拟器，分别作为主控和被控。
 `-e microphoneOnly true` 只运行新增麦克风专项，绕开文件、扫描、小窗等完整测试。
 
-```powershell
-.\gradlew.bat -PandroidCompileSdk=37 :assembleDebug :assembleDebugAndroidTest
-.\gradlew.bat -PandroidCompileSdk=37 :testDebugUnitTest --tests org.scrcpy.android.MicrophoneTargetTest
+```shell
+./gradlew :assembleDebug :assembleDebugAndroidTest
+./gradlew :testDebugUnitTest --tests org.scrcpy.android.MicrophoneTargetTest
+```
 
-# 按根 README 安装主控与测试 APK；仅对专用目标测试包授予录音权限。
-& C:\Software\adb\adb.exe -s emulator-5558 shell pm grant org.scrcpy.android.test android.permission.RECORD_AUDIO
-& C:\Software\adb\adb.exe -s emulator-5556 shell am instrument -w -e host 10.0.2.17 -e port 41929 -e microphoneOnly true org.scrcpy.android.test/org.scrcpy.android.SmokeInstrumentation
+Windows 使用 `gradlew.bat` 执行相同任务。按根 README 安装主控与测试 APK；以下占位参数须替换为当次设备信息，录音权限只授予专用被控测试包：
+
+```text
+adb -s <被控序列号> shell pm grant org.scrcpy.android.test android.permission.RECORD_AUDIO
+adb -s <主控序列号> shell am instrument -w -e host <被控IP> -e port <被控ADB连接端口> -e microphoneOnly true org.scrcpy.android.test/org.scrcpy.android.SmokeInstrumentation
 ```
 
 测试经生产转发通道发送确定的 1 kHz PCM，另一个 UID 的独立测试 Activity 使用正常 AudioRecord 录音。
@@ -100,8 +103,7 @@ Android 14 QPR1+ 的“用作 USB 摄像头”是另一个硬件路径：主控�
 关闭后恢复 `TYPE_BUILTIN_MIC`（15），测试音幅度降至约 0.09。
 测试同时保持 scrcpy 视频解码，用合成源测试时不采集真实主控麦克风。
 
-本地原始日志保存在忽略目录 `test-results-local/input-sharing/`。
-这不能替代 Android 14/15 真机和真实通话应用测试，详细本轮结果见 `TESTING.md`。
+这不能替代 Android 14/15 真机和真实通话应用测试，详细结果与验证边界见 [TESTING.md](TESTING.md)。
 
 ## 官方资料
 

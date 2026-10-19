@@ -137,18 +137,14 @@ git submodule update --init --recursive
 ## 构建
 
 使用仓库根目录的 Gradle Wrapper、JDK 21 或以上，以及 Android SDK。默认 compileSdk 36、targetSdk 36。
-若本地仅安装 API 37 SDK，可使用 `-PandroidCompileSdk=37` 编译，targetSdk 仍为 36。
-当前 AGP 9.1 对 compileSdk 37 会给出兼容性提示，已完成该配置的实际构建与模拟器测试。
+安装 Android SDK API 36，并按实际安装位置配置 `JAVA_HOME` 和 `ANDROID_HOME`，或在未提交的 `local.properties` 中配置 `sdk.dir`。
 
-Windows PowerShell 示例（在仓库根目录执行）：
+在仓库根目录执行；Windows 使用 `gradlew.bat` 运行相同任务：
 
-```powershell
-$env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
-$env:GRADLE_USER_HOME = "$PWD\.gradle-local"
-.\gradlew.bat -PandroidCompileSdk=37 :assembleDebug
+```shell
+./gradlew :assembleDebug
 ```
 
-SDK 路径通过本地、已忽略的 `local.properties` 中 `sdk.dir` 配置，或使用自己的 `ANDROID_HOME`。
 输出：`build/outputs/apk/debug/ScrcpyForAndroid-debug.apk`。
 `bundleScrcpyServer` 自动从当前源码构建并打包同版本服务端，不依赖电脑安装的 scrcpy。
 Debug APK 支持实体机排查；正式分发时请自行配置发布签名。
@@ -157,50 +153,49 @@ Debug APK 支持实体机排查；正式分发时请自行配置发布签名。
 
 单元测试和 Android 静态检查：
 
-```powershell
-.\gradlew.bat -PandroidCompileSdk=37 :testDebugUnitTest :adb-library:testDebugUnitTest :lintDebug
+```shell
+./gradlew :testDebugUnitTest :adb-library:testDebugUnitTest :lintDebug
 ```
 
 测试 APK 包含 `TargetProbeActivity`：持续动画、440 Hz 音频、真实多点触控日志及双向文本剪贴板观察。
 这些组件**仅存在于测试 APK**，主控 APK 没有供外部调用的测试控制入口。
 
-两个专用模拟器中先安装主控 APK 和测试 APK，开启被控端无线调试，然后执行：
+先构建测试 APK：
 
-```powershell
-.\gradlew.bat -PandroidCompileSdk=37 :assembleDebug :assembleDebugAndroidTest
-& C:\Software\adb\adb.exe -s emulator-5554 install -r build/outputs/apk/debug/ScrcpyForAndroid-debug.apk
-& C:\Software\adb\adb.exe -s emulator-5554 install -r build/outputs/apk/androidTest/debug/ScrcpyForAndroid-debug-androidTest.apk
-& C:\Software\adb\adb.exe -s emulator-5556 install -r build/outputs/apk/debug/ScrcpyForAndroid-debug.apk
-& C:\Software\adb\adb.exe -s emulator-5556 install -r build/outputs/apk/androidTest/debug/ScrcpyForAndroid-debug-androidTest.apk
-
-# IP/端口须替换成当前被控模拟器显示的值；首次可增加 -e pairPort 端口 -e pin 六位配对码。
-& C:\Software\adb\adb.exe -s emulator-5554 shell am instrument -w -e host 10.0.2.17 -e port 5555 org.scrcpy.android.test/org.scrcpy.android.SmokeInstrumentation
+```shell
+./gradlew :assembleDebug :assembleDebugAndroidTest
 ```
 
+在两台专用测试设备安装主控 APK 和测试 APK，开启被控端无线调试。使用 SDK platform-tools 的 `adb`，先通过 `adb devices -l` 核对设备角色。以下尖括号内容均须替换为当次设备参数，不能原样执行：
+
+```text
+adb -s <主控序列号> install -r build/outputs/apk/debug/ScrcpyForAndroid-debug.apk
+adb -s <主控序列号> install -r build/outputs/apk/androidTest/debug/ScrcpyForAndroid-debug-androidTest.apk
+adb -s <被控序列号> install -r build/outputs/apk/debug/ScrcpyForAndroid-debug.apk
+adb -s <被控序列号> install -r build/outputs/apk/androidTest/debug/ScrcpyForAndroid-debug-androidTest.apk
+adb -s <主控序列号> shell am instrument -w -e host <被控IP> -e port <被控ADB连接端口> org.scrcpy.android.test/org.scrcpy.android.SmokeInstrumentation
+```
+
+首次配对可增加 `-e pairPort <配对端口> -e pin <六位配对码>`；不要将真实 PIN 写入共享文档或日志。
 集成测试会在指定目标清空 Logcat、写入并删除 `/sdcard/Download/scrcpy-smoke.bin`、启动测试页面、临时锁定屏幕方向并恢复。
 仅对专用测试设备运行。较新模拟器支持在其共享网络内直接连接；如本地模拟器网络隔离，需要使用模拟器网络转发。
 加 `-e connectOnly true` 可只验证连接、身份、Shell、文件和扫描。
 加 `-e mainUiOnly true` 可验证连接、分类导航、凭据详情和设备记录保存。
 新增专项使用 `-e uiStage power`、`window`、`rotation` 或 `settings`，每次只运行一组；统一回归使用 `-e windowUi true`，麦克风使用 `-e microphoneOnly true`。详见 docs 中的验收矩阵。
 
-测试小窗和实体键前，仅对专用主控模拟器授予测试权限并确认全屏说明，然后运行：
+测试小窗和实体键前，通过应用内系统引导授予主控悬浮窗和通知权限，并确认首次全屏说明，然后运行：
 
-```powershell
-& C:\Software\adb\adb.exe -s emulator-5554 shell appops set org.scrcpy.android SYSTEM_ALERT_WINDOW allow
-& C:\Software\adb\adb.exe -s emulator-5554 shell pm grant org.scrcpy.android android.permission.POST_NOTIFICATIONS
-& C:\Software\adb\adb.exe -s emulator-5554 shell settings put secure immersive_mode_confirmations confirmed
-& C:\Software\adb\adb.exe -s emulator-5554 shell am instrument -w -e host 10.0.2.17 -e port 5555 -e windowUi true org.scrcpy.android.test/org.scrcpy.android.SmokeInstrumentation
+```text
+adb -s <主控序列号> shell am instrument -w -e host <被控IP> -e port <被控ADB连接端口> -e windowUi true org.scrcpy.android.test/org.scrcpy.android.SmokeInstrumentation
 ```
-
-实体机请通过应用内权限引导操作，无需执行这些测试权限命令。
 
 ## 日志和限制
 
-在右上角更多菜单或“工具 → 连接与诊断”点击“导出调试日志”。也可采集主控模拟器：
+在右上角更多菜单或“工具 → 连接与诊断”点击“导出调试日志”。也可替换主控序列号后采集：
 
-```powershell
-& C:\Software\adb\adb.exe -s emulator-5554 logcat -v threadtime -s ScrcpyAndroid AdbConnection PairingConnectionCtx AndroidRuntime
-& C:\Software\adb\adb.exe -s emulator-5554 shell run-as org.scrcpy.android cat files/debug.log
+```text
+adb -s <主控序列号> logcat -v threadtime -s ScrcpyAndroid AdbConnection PairingConnectionCtx AndroidRuntime
+adb -s <主控序列号> shell run-as org.scrcpy.android cat files/debug.log
 ```
 
 反馈时附：主控/被控型号和 Android 版本、连接方式、问题出现步骤、日志、画面或声音表现。

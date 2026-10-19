@@ -12,7 +12,7 @@
 ## 项目边界
 
 - 根目录就是 Java Android 主控项目，应用包名 `org.scrcpy.android`。旧 `android-client/` 模块路径已失效，不要重新建立迁移子目录。
-- 目标平台是 Android 16：`targetSdk 36`，主控 `minSdk 30`。本机用 `-PandroidCompileSdk=37` 适配已安装 SDK，这不等于将 targetSdk 升到 37。
+- 目标平台是 Android 16：默认 `compileSdk 36`、`targetSdk 36`，主控 `minSdk 30`。
 - `scrcpy/` 是上游 Git 子模块，锁定 5.0.1。主控专用构建接入放在 `gradle/`；不要为普通 UI 修改改写上游或直接替换服务端版本。
 - `vendor/adb/` 包含本地修复，不能当作可无损覆盖的原始依赖。修改时核对 [UPSTREAM.md](vendor/adb/UPSTREAM.md)，按影响运行流/USB 等对应测试并更新改动记录。
 - 沿用现有 Java、程序化 View 与资源组织。Material Components 主题目前只包装小窗 Context，不要顺手替换全应用主题。
@@ -30,28 +30,23 @@
 8. **协议**：服务端与主控固定配套，修改协议前对照子模块源码。scrcpy 控制/媒体头与 ADB sync 的端序不同；不要凭旧版本经验改数字或报文长度。
 9. **隐私与日志**：保留阶段、错误、帧/字节计数和必要设备诊断；不要记录 PIN、私钥、剪贴板正文或录音内容，不把测试控制入口加入正式 APK。
 
-## 本机构建
+## 构建
 
-Windows PowerShell，仓库根目录：
+使用 JDK 21 或以上、Android SDK API 36 和仓库根目录的 Gradle Wrapper：
 
-```powershell
-$env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
-$env:GRADLE_USER_HOME = "$PWD\.gradle-local"
-.\gradlew.bat -PandroidCompileSdk=37 :assembleDebug
+```shell
+./gradlew :assembleDebug
 # 需要设备测试 APK 时：
-.\gradlew.bat -PandroidCompileSdk=37 :assembleDebugAndroidTest
+./gradlew :assembleDebugAndroidTest
 ```
 
-- 使用 Gradle Wrapper，SDK 路径从本地 `local.properties` 读取，不提交机器配置和缓存。
-- 当前 SDK XML / compileSdk 37 兼容性及 Java 8 编译目标提示已有成功构建证据，不要仅为消除提示升级整个工具链。
-- 用户要求：若确有 JDK/SDK/Android Studio/模拟器环境问题，暂停并清楚说明，让用户手动解决。普通 Maven 依赖下载不是环境故障；沙箱权限不足也应先与真实环境故障区分。
+- Windows 使用 `gradlew.bat` 执行相同任务。通过 `JAVA_HOME`、`ANDROID_HOME` 或未提交的 `local.properties` 配置各自安装位置，不提交机器配置和缓存。
 
 ## 测试与设备
 
 - 按修改选择验证：局部 UI 用相关专项和必要的编译/静态检查；协议、持久化或生命周期变化再扩大回归。用户要求逐项实现时，每项测试通过后再做下一项，最后按要求回归。不要把旧记录写成本次重测。
-- 可选本地检查：`:testDebugUnitTest`、`:adb-library:testDebugUnitTest`、`:lintDebug`；这些是根项目任务，执行时同样带 SDK 覆盖参数。
-- 本机 ADB 为 `C:\Software\adb\adb.exe`。**每条设备操作明确指定 `-s`，先核对设备角色。** 历史上模拟器编号发生过变化，也出现过额外真实设备；不能对列表首项或所有在线设备运行测试。
-- 最近验证角色为主控 `emulator-5554` / Medium_Phone、被控 `emulator-5556` / Medium_Phone_1；更早文档中的 5556 / 5558 是历史编号。IP、TLS 端口和 PIN 必须读取当次值。
+- 可选检查：`:testDebugUnitTest`、`:adb-library:testDebugUnitTest`、`:lintDebug`；这些是根项目任务。
+- 使用 Android SDK platform-tools 的 `adb`。**每条设备操作明确指定 `-s`，先核对主控/被控角色。** 序列号、IP、TLS 端口和 PIN 读取当次值；不能默认选择列表首项或所有在线设备。
 - 设备测试入口为测试 APK 的 `org.scrcpy.android.test/org.scrcpy.android.SmokeInstrumentation`。专项参数：`-e uiStage window|power|rotation|settings`（每次一个值）；其余参数与完整命令见接手文档。
 - 自动化会修改专用目标的临时设置、运行探针/录音测试、生成截图或清空日志。只用于明确指定的测试设备，结束恢复设置、设备名与偏好并停止测试组件。用户真机按其当次授权和复现步骤操作。
 - 判断 `result=PASS` 与最终 `INSTRUMENTATION_CODE: -1`，不要仅依据主机 adb 进程退出码。区分 PASS、FAIL、SKIP、未测试；上游 USB 说明不等于本项目 Android OTG 实测。
@@ -60,6 +55,7 @@ $env:GRADLE_USER_HOME = "$PWD\.gradle-local"
 ## 交付与文档维护
 
 - 行为变化同步 `docs/requirements-and-regression.md`；实际运行结果更新 `TESTING.md`，架构/已知问题变化更新 `docs/development-handoff.md`。不要删除历史验证边界。
+- 共享文档只记录项目通用要求、实现和验证结论；命令使用角色占位参数。不要加入个人安装路径、固定测试设备编号/IP/端口、缓存位置、工具沙箱细节或临时环境排障记录；这些留在未提交的配置或任务日志中。
 - 需要交付 APK 时更新 `build.gradle` 版本，将产物复制到 `dist/ScrcpyForAndroid-<版本>-debug.apk` 并更新 `dist/SHA256SUMS.txt`；保留旧产物。`dist/`、`build/`、`test-results-local/` 均被忽略，不强制加入 Git。
 - 不覆盖已有本地日志/截图目录，使用本任务独立目录。保留图标/第三方代码来源与许可。
 - 最后检查 diff、工作区和子模块状态，报告改动、实际测试范围、剩余限制以及相关文件/产物。不要自动推送、发布或改写历史。

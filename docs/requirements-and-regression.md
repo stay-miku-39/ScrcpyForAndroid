@@ -7,9 +7,8 @@
 - 主控是普通 Android APK，最低 Android 11 / API 30，targetSdk 36（Android 16）。主要使用场景是 Android 16 主控控制 Android 15/16 设备。
 - 被控端通过 ADB 启动 scrcpy shell 服务；一般远控不要求安装主控 APK、root 或无障碍服务。测试探针只属于测试 APK。
 - 根目录存放迁移代码；`scrcpy/` 是独立 Git 子模块，固定 5.0.1 / `a60891aea193d92e7e5c3942700eca63f9d19a5f`，本次未修改上游。
-- 当前编译机使用 Android Studio JBR、Gradle Wrapper、本地已安装的 API 37 SDK，通过 `-PandroidCompileSdk=37` 构建；targetSdk 保持 36。
-- 当前两台 Android 16 模拟器：主控 `emulator-5554`（Medium_Phone）、被控 `emulator-5556`（Medium_Phone_1）。编号随启动顺序改变，测试前必须重新核对角色；它们对应旧记录中的 5556 / 5558。
-- 当前专用测试目标为 `10.0.2.17:5555`，使用已授权的持久 RSA 身份。无线调试 TLS 连接端口应使用设备当时显示的值。
+- 构建使用 JDK 21 或以上、Gradle Wrapper 和 Android SDK API 36；默认 compileSdk / targetSdk 均为 36。
+- 设备集成验证需要明确指定的主控与被控测试设备；序列号、IP、配对端口和连接端口均从当次设备读取，不能复用文档中的固定现场配置。
 
 ## 2. 导航与状态
 
@@ -66,7 +65,7 @@
 | PWR-05 | 小窗电源 | 顶部右侧 Material 电源矢量图标，点按约 80 ms，长按约 800 ms；没有额外操作菜单；内容描述与长按提示保留中文，不依赖字体是否包含电源字符 |
 | PWR-06 | 释放保证 | 新动作先释放旧动作；暂停、退出、窗口切换和服务销毁释放；内部时长限制 50–1200 ms |
 
-POWER + 音量− 在本机 Android 16 模拟器上以实际生成截图验收。POWER + 音量+ 的系统动作因 ROM 而异，协议序列通过单元测试，系统结果需实体机核对。无法通过软件电源键启动已经彻底关机的设备。
+POWER + 音量− 在 Android 16 模拟器上以实际生成截图验收。POWER + 音量+ 的系统动作因 ROM 而异，协议序列通过单元测试，系统结果需实体机核对。无法通过软件电源键启动已经彻底关机的设备。
 
 测试长按时临时把专用目标 `power_button_long_press` 设为 1，结束恢复。刚唤醒立即再次按 POWER 可能触发 Android 双击电源动作；专项测试按真实独立手势间隔执行。应用不自动改变这些系统设置。
 
@@ -154,12 +153,10 @@ POWER + 音量− 在本机 Android 16 模拟器上以实际生成截图验收�
 
 0.4.1 为小窗局部外观微调：只编译、静态检查并执行更新后的小窗专项，不重跑未涉及的配对、扫描、文件、麦克风等功能。0.4.0 的完整回归证据保留在 TESTING.md，不能将其写成本次全部重测。
 
-构建与本地测试：
+构建与测试（Windows 使用 `gradlew.bat` 执行相同任务）：
 
-```powershell
-$env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
-$env:GRADLE_USER_HOME = "$PWD\.gradle-local"
-.\gradlew.bat -PandroidCompileSdk=37 :testDebugUnitTest :adb-library:testDebugUnitTest :lintDebug :assembleDebug :assembleDebugAndroidTest
+```shell
+./gradlew :testDebugUnitTest :adb-library:testDebugUnitTest :lintDebug :assembleDebug :assembleDebugAndroidTest
 ```
 
 设备测试均使用测试 APK 的 `org.scrcpy.android.test/org.scrcpy.android.SmokeInstrumentation`，以下参数附加在 `adb -s 主控编号 shell am instrument -w -e host 目标IP -e port 目标端口` 后：
@@ -178,7 +175,7 @@ $env:GRADLE_USER_HOME = "$PWD\.gradle-local"
 
 测试有意在专用目标清空 Logcat、生成截图、临时锁定旋转/长按电源行为、启动/停止探针、上传并删除测试文件。小窗专项临时设置长中文设备名，完成后恢复原设备名、窗口位置/大小和不透明度。结束恢复测试临时偏好和系统设置、停止会话和探针；不要对日常工作设备无提示运行这组自动化。设备序列号、IP 和端口不能硬编码到产品逻辑。
 
-0.4.0 运行日志和 UI 截图位于忽略目录 `test-results-local/ui-2026-10-19/`；0.4.1 小窗微调位于 `test-results-local/window-0.4.1/`。图像原件生成于主控外部应用目录 `files/ui-smoke/`。正式 APK 不包含这些测试控制入口。
+实际执行范围与结论写入 [TESTING.md](../TESTING.md)，原始日志和截图按任务归档在被忽略的 `test-results-local/` 中。图像原件生成于主控外部应用目录 `files/ui-smoke/`。正式 APK 不包含这些测试控制入口。
 
 ## 12. 实体机补充验收清单
 
