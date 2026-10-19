@@ -4,6 +4,10 @@
 被控端运行 `scrcpy/` 子模块中的 scrcpy **5.0.1** 服务端，支持 Android 15/16；不需要安装主控 APK、root 或辅助无障碍服务。
 每次会话通过 ADB 上传服务端，以 shell 身份启动，结束时清理。
 
+## 开发接手
+
+后续 agent 请先阅读 [AGENTS.md](AGENTS.md) 和 [开发接手文档](docs/development-handoff.md)。后者总结全部开发阶段、架构与源码入口、测试证据、已知问题和交付流程；完整文档导航见 [docs/README.md](docs/README.md)。
+
 ## 0.4.1 小窗微调
 
 - 上下操作栏统一为 40 dp，整个窗口按圆角裁切，修复栏背景越出圆角的问题。
