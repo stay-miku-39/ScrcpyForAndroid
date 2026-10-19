@@ -1,0 +1,9 @@
+<resources>
+    <!-- Scoped to the overlay; existing activity themes stay independent. -->
+    <style name="Theme.Scrcpy.Window" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#FFFFFF</item>
+        <item name="colorOnPrimary">#182841</item>
+        <item name="colorSurface">#182841</item>
+        <item name="colorOnSurface">#FFFFFF</item>
+    </style>
+</resources>

@@ -3,16 +3,21 @@ package org.scrcpy.android;
 import android.app.*;
 import android.content.*;
 import android.content.res.Configuration;
+import android.content.res.ColorStateList;
 import android.graphics.*;
 import android.os.*;
 import android.provider.Settings;
 import android.view.*;
 import android.widget.*;
+import com.google.android.material.button.MaterialButton;
+import com.google.android.material.shape.MaterialShapeDrawable;
+import com.google.android.material.shape.ShapeAppearanceModel;
 
 /** Interactive overlay with explicit chrome controls; hardware keys remain local. */
 public class FloatingWindowService extends Service implements RemoteDisplay.Events {
     private static final String CHANNEL = "remote-window";
     private static final int NOTIFICATION = 42;
+    private static final int BAR_HEIGHT_DP = 40, BORDER_DP = 2;
     static final String CLOSE = "org.scrcpy.android.CLOSE_WINDOW";
     private static FloatingWindowService instance;
     private RuntimeState runtime;
@@ -20,10 +25,11 @@ public class FloatingWindowService extends Service implements RemoteDisplay.Even
     private WindowManager.LayoutParams position;
     private LinearLayout window;
     RemoteDisplay display;
-    Button powerButton;
+    MaterialButton powerButton, fullscreenButton;
     RemoteKeyActions powerKeys;
-    Button shrinkButton, expandButton, fullscreenButton;
-    private LinearLayout header, footer;
+    ImageView leftResizeGrip, rightResizeGrip;
+    TextView deviceLabel;
+    LinearLayout header, footer;
     private boolean expanding;
     private ResultReceiver result;
     private int remoteWidth = 720, remoteHeight = 1600;
@@ -70,32 +76,36 @@ public class FloatingWindowService extends Service implements RemoteDisplay.Even
     }
     private Rect bounds() { return windows.getCurrentWindowMetrics().getBounds(); }
     private void createWindow() {
-        window = new LinearLayout(this); window.setOrientation(LinearLayout.VERTICAL); window.setElevation(dp(12));
-        window.setBackground(MainUi.background(Color.BLACK, Color.rgb(95, 119, 151), 12, this)); window.setPadding(dp(2), dp(2), dp(2), dp(2));
-        TextView handle = new TextView(this); handle.setText("远程设备  ·  拖动移动"); handle.setTextSize(11); handle.setGravity(Gravity.CENTER);
-        handle.setSingleLine(true); handle.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        handle.setTextColor(Color.WHITE); handle.setBackgroundColor(0xFF182841); handle.setContentDescription("拖动悬浮窗");
-        header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL); header.setBackgroundColor(0xFF182841);
-        header.addView(handle, new LinearLayout.LayoutParams(0, dp(40), 1));
-        powerButton = new Button(this); powerButton.setText("电源"); powerButton.setTextSize(12); powerButton.setTextColor(Color.WHITE);
-        powerButton.setMinWidth(0); powerButton.setPadding(0, 0, 0, 0); powerButton.setBackgroundColor(Color.TRANSPARENT);
-        powerButton.setContentDescription("电源：点按切换屏幕，长按发送长按电源");
-        header.addView(powerButton, new LinearLayout.LayoutParams(dp(44), dp(40))); window.addView(header);
+        Context appearance = new ContextThemeWrapper(this, R.style.Theme_Scrcpy_Window);
+        window = new LinearLayout(appearance); window.setOrientation(LinearLayout.VERTICAL); window.setElevation(dp(12));
+        MaterialShapeDrawable frame = new MaterialShapeDrawable(ShapeAppearanceModel.builder().setAllCornerSizes(dp(12)).build());
+        frame.setFillColor(ColorStateList.valueOf(Color.BLACK)); frame.setStroke(dp(1), Color.rgb(95, 119, 151));
+        window.setBackground(frame); window.setClipToOutline(true); window.setClipChildren(true);
+        window.setPadding(dp(BORDER_DP), dp(BORDER_DP), dp(BORDER_DP), dp(BORDER_DP));
+        deviceLabel = new TextView(appearance); deviceLabel.setText("Android"); deviceLabel.setTextSize(12); deviceLabel.setGravity(Gravity.CENTER_VERTICAL);
+        deviceLabel.setSingleLine(true); deviceLabel.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        deviceLabel.setMinWidth(0); deviceLabel.setPadding(dp(10), 0, dp(4), 0); deviceLabel.setTextColor(Color.WHITE);
+        deviceLabel.setContentDescription("Android，拖动移动小窗");
+        header = new LinearLayout(appearance); header.setGravity(Gravity.CENTER_VERTICAL); header.setBackgroundColor(0xFF182841);
+        // Weight 1 + zero width leaves exactly the space not occupied by the
+        // power icon. TextView recomputes end ellipsis on every window resize.
+        header.addView(deviceLabel, new LinearLayout.LayoutParams(0, dp(BAR_HEIGHT_DP), 1));
+        powerButton = iconButton(appearance, R.drawable.ic_window_power, "电源：点按切换屏幕，长按发送长按电源");
+        header.addView(powerButton, new LinearLayout.LayoutParams(dp(40), dp(BAR_HEIGHT_DP)));
+        window.addView(header, new LinearLayout.LayoutParams(-1, dp(BAR_HEIGHT_DP)));
         display = new RemoteDisplay(this, runtime, audio, this); window.addView(display, new LinearLayout.LayoutParams(-1, 0, 1));
         powerKeys = new RemoteKeyActions(() -> display.ownsSession() ? runtime.session : null);
         powerButton.setOnClickListener(v -> powerKeys.pulse(80, KeyEvent.KEYCODE_POWER));
         powerButton.setOnLongClickListener(v -> { powerKeys.pulse(800, KeyEvent.KEYCODE_POWER); Toast.makeText(this, "已发送长按电源", Toast.LENGTH_SHORT).show(); return true; });
-        footer = new LinearLayout(this); footer.setGravity(Gravity.CENTER_VERTICAL); footer.setBackgroundColor(0xFF182841);
-        shrinkButton = chromeButton("−", "缩小；拖动左下角等比缩放");
-        expandButton = chromeButton("+", "放大；拖动右下角等比缩放");
-        fullscreenButton = chromeButton("全屏", "恢复全屏远程控制"); fullscreenButton.setTextSize(13);
-        footer.addView(shrinkButton, new LinearLayout.LayoutParams(dp(44), dp(48)));
-        footer.addView(fullscreenButton, new LinearLayout.LayoutParams(0, dp(48), 1));
-        footer.addView(expandButton, new LinearLayout.LayoutParams(dp(44), dp(48)));
-        window.addView(footer, new LinearLayout.LayoutParams(-1, dp(48)));
-        shrinkButton.setOnClickListener(v -> scaleWindow(1 / 1.12f)); expandButton.setOnClickListener(v -> scaleWindow(1.12f));
+        footer = new LinearLayout(appearance); footer.setGravity(Gravity.CENTER_VERTICAL); footer.setBackgroundColor(0xFF182841);
+        leftResizeGrip = resizeGrip(appearance, true); rightResizeGrip = resizeGrip(appearance, false);
+        fullscreenButton = iconButton(appearance, R.drawable.ic_window_fullscreen, "恢复全屏远程控制");
+        footer.addView(leftResizeGrip, new LinearLayout.LayoutParams(dp(40), dp(BAR_HEIGHT_DP)));
+        footer.addView(fullscreenButton, new LinearLayout.LayoutParams(0, dp(BAR_HEIGHT_DP), 1));
+        footer.addView(rightResizeGrip, new LinearLayout.LayoutParams(dp(40), dp(BAR_HEIGHT_DP)));
+        window.addView(footer, new LinearLayout.LayoutParams(-1, dp(BAR_HEIGHT_DP)));
         fullscreenButton.setOnClickListener(v -> restoreFullscreen());
-        installResize(shrinkButton, true); installResize(expandButton, false);
+        installResize(leftResizeGrip, true); installResize(rightResizeGrip, false);
         position = new WindowManager.LayoutParams(dp(220), dp(420), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                         | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON, PixelFormat.TRANSLUCENT);
@@ -105,7 +115,7 @@ public class FloatingWindowService extends Service implements RemoteDisplay.Even
         android.content.SharedPreferences prefs = getSharedPreferences("remote-ui", MODE_PRIVATE);
         position.width = prefs.getInt("windowWidth", Math.min(dp(220), bounds().width()/2)); position.x = prefs.getInt("windowX", dp(12)); position.y = prefs.getInt("windowY", dp(90));
         fitWindow();
-        handle.setOnTouchListener(new View.OnTouchListener() {
+        deviceLabel.setOnTouchListener(new View.OnTouchListener() {
             float x, y; int startX, startY;
             public boolean onTouch(View v, MotionEvent e) {
                 if (e.getActionMasked() == MotionEvent.ACTION_DOWN) { x = e.getRawX(); y = e.getRawY(); startX = position.x; startY = position.y; display.releaseTouches(); }
@@ -114,12 +124,37 @@ public class FloatingWindowService extends Service implements RemoteDisplay.Even
                 return true;
             }
         });
-        windows.addView(window, position); DebugLog.write("floating window added");
+        windows.addView(window, position); loadDeviceName(); DebugLog.write("floating window added");
     }
-    private Button chromeButton(String text, String description) {
-        Button button = new Button(this); button.setText(text); button.setTextSize(21); button.setAllCaps(false);
-        button.setTextColor(Color.WHITE); button.setMinWidth(0); button.setPadding(0, 0, 0, 0);
-        button.setBackgroundColor(Color.TRANSPARENT); button.setContentDescription(description); return button;
+    private MaterialButton iconButton(Context context, int drawable, String description) {
+        MaterialButton button = new MaterialButton(context); button.setText(""); button.setIconResource(drawable);
+        button.setIconSize(dp(22)); button.setIconPadding(0); button.setIconGravity(MaterialButton.ICON_GRAVITY_TEXT_START);
+        button.setIconTint(ColorStateList.valueOf(Color.WHITE)); button.setBackgroundTintList(ColorStateList.valueOf(Color.TRANSPARENT));
+        button.setRippleColor(ColorStateList.valueOf(0x33FFFFFF)); button.setCornerRadius(dp(8)); button.setStrokeWidth(0);
+        button.setInsetTop(0); button.setInsetBottom(0); button.setMinWidth(0); button.setMinimumWidth(0);
+        button.setMinHeight(0); button.setMinimumHeight(0); button.setPadding(0, 0, 0, 0); button.setStateListAnimator(null);
+        button.setContentDescription(description); button.setTooltipText(description); return button;
+    }
+    private ImageView resizeGrip(Context context, boolean left) {
+        ImageView grip = new ImageView(context); grip.setImageResource(R.drawable.ic_window_resize); grip.setPadding(dp(8), dp(8), dp(6), dp(6));
+        grip.setScaleType(ImageView.ScaleType.FIT_END); if (left) grip.setScaleX(-1);
+        grip.setContentDescription(left ? "拖动左下角等比缩放" : "拖动右下角等比缩放");
+        grip.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES); return grip;
+    }
+    private void loadDeviceName() {
+        String target = runtime.target;
+        // A name query never blocks Surface handoff, the UI or the shared worker.
+        new Thread(() -> {
+            String name = "Android";
+            try { name = RemoteDeviceName.parse(runtime.shell("settings get global device_name 2>/dev/null; getprop ro.product.model")); }
+            catch (Exception error) { DebugLog.write("floating device name unavailable: " + error.getMessage()); }
+            String label = name;
+            new Handler(getMainLooper()).post(() -> {
+                if (instance != this || window == null || !target.equals(runtime.target)) return;
+                deviceLabel.setText(label); deviceLabel.setContentDescription(label + "，拖动移动小窗");
+                DebugLog.write("floating device name loaded chars=" + label.length());
+            });
+        }, "floating-device-name").start();
     }
     private void installResize(View corner, boolean left) {
         corner.setOnTouchListener(new View.OnTouchListener() {
@@ -146,11 +181,6 @@ public class FloatingWindowService extends Service implements RemoteDisplay.Even
             }
         });
     }
-    private void scaleWindow(float factor) {
-        display.releaseTouches(); int centerX = position.x + position.width / 2, centerY = position.y + position.height / 2;
-        position.width = Math.round(position.width * factor); fitWindow();
-        position.x = centerX - position.width / 2; position.y = centerY - position.height / 2; clampPosition(); update(); save();
-    }
     void restoreFullscreen() {
         if (expanding) return; expanding = true; powerKeys.release(); display.releaseTouches();
         try { startActivity(new Intent(this, RemoteActivity.class).putExtra("audio", audio).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP)); }
@@ -158,9 +188,11 @@ public class FloatingWindowService extends Service implements RemoteDisplay.Even
     }
     Rect windowBounds() { return new Rect(position.x, position.y, position.x + position.width, position.y + position.height); }
     float windowOpacity() { return position.alpha; }
+    View windowView() { return window; }
     private void fitWindow() {
         Rect available = bounds(); int maxWidth = Math.max(dp(120), available.width() - dp(16)), maxHeight = Math.max(dp(160), available.height() - dp(80));
-        int[] size = WindowGeometry.fit(position.width, remoteWidth, remoteHeight, dp(160), maxWidth, maxHeight, dp(4), dp(92));
+        int[] size = WindowGeometry.fit(position.width, remoteWidth, remoteHeight, dp(160), maxWidth, maxHeight,
+                dp(BORDER_DP * 2), dp(BAR_HEIGHT_DP * 2 + BORDER_DP * 2));
         position.width = size[0]; position.height = size[1];
         clampPosition();
     }

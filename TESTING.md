@@ -1,5 +1,48 @@
 # Validation — 2026-10-19
 
+## 0.4.1 focused floating-window refinement
+
+Only the changed floating UI was exercised on controller `emulator-5554` and
+target `emulator-5556`, both Android 16. The existing ADB/control/audio/video
+implementation and scrcpy submodule were not modified. No broader pairing,
+file, scan, microphone or full regression suite is claimed for this patch.
+
+- `:assembleDebug`, `:assembleDebugAndroidTest`, `:lintDebug`: PASS.
+  Lint reports 0 errors and 28 warnings (including dependency/style suggestions).
+- Updated `-e uiStage window`: PASS.
+- Header and footer both measure 40 dp; native rounded outline clips child bars.
+- Power and fullscreen use actual vector icons on Material Components buttons;
+  text labels and the stepwise + / − buttons are absent.
+- Both corner hatch handles resize proportionally when dragged. Tapping either
+  handle leaves geometry unchanged. Bounds and target-input isolation pass.
+- The target's global device name was temporarily replaced with a long Chinese /
+  English name. The overlay reads the name through ADB; the TextView keeps the
+  complete value while visible text is end-ellipsized. Enlarging the actual
+  window reveals more characters. Top-title dragging still moves the window.
+- Actual icon power clicks sleep/wake the target; the fullscreen icon restores
+  the existing session, with subsequent decoded frames and no reconnect.
+- Compact/expanded screenshots were visually inspected for four clipped corners,
+  equal bars, mirrored resize grips, icon placement and adaptive title truncation.
+- Target device name, saved geometry and window opacity were restored. Probe and
+  floating service are stopped after the test.
+
+The Unicode fixture is encoded into an ASCII-only test setup command before
+being decoded on the target. Direct non-ASCII service strings exposed an existing
+vendored `AdbProtocol.generateOpen()` allocation issue during test setup; the
+display-only name query itself is ASCII and reads UTF-8 output normally. This
+patch does not expand scope into modifying the ADB transport. The first title
+comparison also read a pre-resize layout; it now waits for the native window
+layout before comparing visible character counts.
+
+```text
+INSTRUMENTATION_RESULT: result=PASS equal bars, rounded clipping, icon power/fullscreen, drag-only corners/aspect/bounds, ADB name/width ellipsis, header move, isolated input, same session
+INSTRUMENTATION_CODE: -1
+```
+
+Logs/screenshots: ignored `test-results-local/window-0.4.1/`.
+Updated requirements: [docs/requirements-and-regression.md](docs/requirements-and-regression.md).
+Component/icon sources and license: [docs/ui-assets.md](docs/ui-assets.md).
+
 ## 0.4.0 power, window footer, native rotation and appearance
 
 Implemented in order, with each focused suite passing before the next feature:

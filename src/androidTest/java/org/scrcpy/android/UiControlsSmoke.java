@@ -9,6 +9,7 @@ import android.widget.Button;
 
 /** Explicit stage-by-stage checks; only runs against the supplied test target. */
 final class UiControlsSmoke {
+    private static final String WINDOW_NAME = "我的远程平板 Android 16 — 一段用于验证不同窗口宽度下标题省略行为的很长设备名称";
     interface Check { boolean done() throws Exception; }
     static void until(Check condition, int seconds, String failure) throws Exception {
         long deadline = SystemClock.elapsedRealtime() + seconds * 1000L;
@@ -41,6 +42,12 @@ final class UiControlsSmoke {
         });
     }
     static boolean awake(RuntimeState state) throws Exception { return state.shell("dumpsys power").contains("mWakefulness=Awake"); }
+    private static void putDeviceName(RuntimeState state, String name) throws Exception {
+        // Keep the test-only OPEN service string ASCII; the device decodes the
+        // UTF-8 fixture without depending on arbitrary shell-command input paths.
+        String encoded = android.util.Base64.encodeToString(name.getBytes(java.nio.charset.StandardCharsets.UTF_8), android.util.Base64.NO_WRAP);
+        state.shell("settings put global device_name \"$(echo " + encoded + " | base64 -d)\"");
+    }
     private static boolean powerMenuVisible(RuntimeState state) throws Exception {
         java.util.regex.Matcher windows = java.util.regex.Pattern.compile("(?ms)^  Window #\\d+ Window\\{[^\\n]*GlobalActions[^\\n]*\\}:\\r?\\n(.*?)(?=^  Window #|\\z)")
                 .matcher(state.shell("dumpsys window windows"));
@@ -55,10 +62,15 @@ final class UiControlsSmoke {
         prepareTarget(state);
         if ("settings".equals(stage)) return settings(test, context, state);
         SharedPreferences appearance = UiPreferences.get(context);
-        String[] windowKeys = {"windowX", "windowY", "windowWidth"};
-        int[] windowValues = new int[3]; boolean[] windowHad = new boolean[3];
+        String[] windowKeys = {"windowX", "windowY", "windowWidth", UiPreferences.WINDOW};
+        int[] windowValues = new int[windowKeys.length]; boolean[] windowHad = new boolean[windowKeys.length];
         for (int i = 0; i < windowKeys.length; i++) { windowHad[i] = appearance.contains(windowKeys[i]); windowValues[i] = appearance.getInt(windowKeys[i], 0); }
-        if ("window".equals(stage)) appearance.edit().putInt("windowWidth", MainUi.dp(context, 220)).apply();
+        String oldName = null;
+        if ("window".equals(stage)) {
+            appearance.edit().putInt("windowWidth", MainUi.dp(context, 220)).putInt(UiPreferences.WINDOW, 100).apply();
+            oldName = state.shell("settings get global device_name").trim();
+            putDeviceName(state, WINDOW_NAME);
+        }
         RemoteActivity remote = (RemoteActivity)test.startActivitySync(new Intent(context, RemoteActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("audio", false));
         String longPress = null;
@@ -114,6 +126,7 @@ final class UiControlsSmoke {
             if (longPress != null) state.shell("settings " + ("null".equals(longPress) ? "delete global power_button_long_press" : "put global power_button_long_press " + RuntimeState.quote(longPress)));
             SharedPreferences.Editor edit = appearance.edit();
             for (int i = 0; i < windowKeys.length; i++) { if (windowHad[i]) edit.putInt(windowKeys[i], windowValues[i]); else edit.remove(windowKeys[i]); } edit.apply();
+            if (oldName != null) { if ("null".equals(oldName)) state.shell("settings delete global device_name"); else putDeviceName(state, oldName); }
             state.shell("input keyevent KEYCODE_WAKEUP; input keyevent KEYCODE_BACK; am force-stop org.scrcpy.android.test");
         }
     }
@@ -283,25 +296,44 @@ final class UiControlsSmoke {
         // Let the controller finish returning from remote-oriented fullscreen
         // to its normal UI before measuring an overlay resize.
         test.waitForIdleSync(); Thread.sleep(800);
-        // Creation fits a provisional portrait size before the actual video
-        // arrives; this may legitimately start at the minimum on a landscape host.
-        test.runOnMainSync(() -> { floating.expandButton.performClick(); floating.expandButton.performClick(); });
-        int width = floating.windowBounds().width();
-        test.runOnMainSync(() -> floating.shrinkButton.performClick());
-        until(() -> floating.windowBounds().width() < width, 5, "Minus did not shrink window (initial=" + width + ")"); checkAspect(floating, original);
-        int smaller = floating.windowBounds().width();
-        test.runOnMainSync(() -> floating.expandButton.performClick());
-        until(() -> floating.windowBounds().width() > smaller, 5, "Plus did not enlarge window"); checkAspect(floating, original);
+        until(() -> WINDOW_NAME.contentEquals(floating.deviceLabel.getText()), 8, "ADB device name did not reach title");
+        test.runOnMainSync(() -> {
+            check(floating.header.getHeight() == floating.footer.getHeight(), "Window bars have different heights");
+            check(floating.powerButton.getIcon() != null && floating.powerButton.getText().length() == 0, "Power is not an icon button");
+            check(floating.fullscreenButton.getIcon() != null && floating.fullscreenButton.getText().length() == 0, "Fullscreen is not an icon button");
+            android.graphics.Outline outline = new android.graphics.Outline();
+            View frame = floating.windowView(); frame.getOutlineProvider().getOutline(frame, outline);
+            check(frame.getClipToOutline() && outline.canClip() && outline.getRadius() > 0, "Rounded frame does not clip its bars");
+            check(!floating.leftResizeGrip.isClickable() && !floating.rightResizeGrip.isClickable(), "Resize corners are still click buttons");
+        });
+        Rect unchanged = floating.windowBounds();
+        test.runOnMainSync(() -> { drag(floating.leftResizeGrip, 0, 0); drag(floating.rightResizeGrip, 0, 0); });
+        check(unchanged.equals(floating.windowBounds()), "A corner tap still resized the window");
+        test.runOnMainSync(() -> drag(floating.rightResizeGrip, -50000, -50000));
+        until(() -> floating.deviceLabel.getLayout() != null && floating.deviceLabel.getLayout().getEllipsisCount(0) > 0, 5, "Narrow title does not ellipsize");
+        capture(test, context, "window-compact");
+        int narrowEnd = floating.deviceLabel.getLayout().getEllipsisStart(0);
         int initial = floating.windowBounds().width();
-        test.runOnMainSync(() -> drag(floating.expandButton, 100, 120));
+        test.runOnMainSync(() -> drag(floating.rightResizeGrip, 160, 200));
         until(() -> floating.windowBounds().width() > initial, 5, "Right corner did not resize"); checkAspect(floating, original);
+        until(() -> floating.deviceLabel.getLayout().getEllipsisStart(0) > narrowEnd, 5, "Title did not use extra width after resize");
         int larger = floating.windowBounds().width();
-        test.runOnMainSync(() -> drag(floating.shrinkButton, 70, -80));
+        test.runOnMainSync(() -> drag(floating.leftResizeGrip, 70, -80));
         until(() -> floating.windowBounds().width() < larger, 5, "Left corner did not resize"); checkAspect(floating, original);
-        test.runOnMainSync(() -> drag(floating.expandButton, 50000, 50000));
+        int leftSmall = floating.windowBounds().width();
+        test.runOnMainSync(() -> drag(floating.leftResizeGrip, -110, 120));
+        until(() -> floating.windowBounds().width() > leftSmall, 5, "Left corner did not enlarge"); checkAspect(floating, original);
+        Rect beforeMove = floating.windowBounds(); test.runOnMainSync(() -> drag(floating.deviceLabel, 45, 40));
+        check(!beforeMove.equals(floating.windowBounds()), "Device-name header no longer moves the window");
+        capture(test, context, "window-expanded");
+        test.runOnMainSync(() -> drag(floating.rightResizeGrip, 50000, 50000));
         Rect fit = floating.windowBounds(); Rect screen = context.getSystemService(android.view.WindowManager.class).getCurrentWindowMetrics().getBounds();
         check(fit.left >= 0 && fit.top >= 0 && fit.right <= screen.width() && fit.bottom <= screen.height(), "Resized window left screen bounds"); checkAspect(floating, original);
         check(touches.equals(state.shell("logcat -d -s ScrcpyProbe:I '*:S'")), "Footer resize leaked touch to target");
+        test.runOnMainSync(() -> floating.powerButton.performClick());
+        until(() -> !awake(state), 12, "Power icon did not sleep target");
+        Thread.sleep(650); test.runOnMainSync(() -> floating.powerButton.performClick());
+        until(() -> awake(state), 12, "Power icon did not wake target");
         android.app.Instrumentation.ActivityMonitor monitor = test.addMonitor(RemoteActivity.class.getName(), null, false);
         RemoteActivity restored = null;
         try {
@@ -309,8 +341,8 @@ final class UiControlsSmoke {
             restored = (RemoteActivity)test.waitForMonitorWithTimeout(monitor, 15000);
             check(restored != null, "Footer fullscreen action did not open activity"); RemoteActivity full = restored;
             until(() -> full.session == original && !FloatingWindowService.isShowing() && original.renderedFrames() > before + 5, 15, "Footer fullscreen restart lost session");
-            DebugLog.write("TEST window footer click/drag/aspect/bounds/no-touch/fullscreen same-session PASS");
-            return "PASS window footer shrink/enlarge, both resize corners, aspect/bounds, isolated input, fullscreen without reconnect";
+            DebugLog.write("TEST window equal bars/rounded clip/icon controls/nonclick resize grips/ADB name/ellipsis/drag/power/fullscreen same-session PASS");
+            return "PASS equal bars, rounded clipping, icon power/fullscreen, drag-only corners/aspect/bounds, ADB name/width ellipsis, header move, isolated input, same session";
         } finally { test.removeMonitor(monitor); if (restored != null) { RemoteActivity full = restored; test.runOnMainSync(full::finish); } }
     }
 }

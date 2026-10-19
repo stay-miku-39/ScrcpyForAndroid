@@ -1,0 +1,7 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <!-- Three corner hatch marks; left handle mirrors this drawable. -->
+    <path android:fillColor="@android:color/transparent" android:strokeColor="#FFB6C5DC"
+        android:strokeWidth="1.5" android:strokeLineCap="round"
+        android:pathData="M5,19L19,5M11,19L19,11M17,19L19,17" />
+</vector>
