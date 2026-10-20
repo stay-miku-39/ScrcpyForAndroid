@@ -37,4 +37,8 @@ final class ControlProtocol {
         if (bytes.length > (1 << 18) - 14) throw new IllegalArgumentException("剪贴板文本超过 256 KiB");
         return packet(out -> { out.writeByte(9); out.writeLong(sequence); out.writeBoolean(paste); out.writeInt(bytes.length); out.write(bytes); });
     }
+    static byte[] startApp(String name) {
+        byte[] bytes = name.getBytes(StandardCharsets.UTF_8);
+        return packet(out -> { out.writeByte(16); out.writeByte(bytes.length); out.write(bytes); });
+    }
 }

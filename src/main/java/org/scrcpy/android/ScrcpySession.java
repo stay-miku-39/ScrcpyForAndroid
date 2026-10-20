@@ -6,7 +6,6 @@ import android.view.Surface;
 import io.github.muntashirakon.adb.AdbStream;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
-import java.nio.ByteBuffer;
 import java.security.SecureRandom;
 import java.util.*;
 import java.util.concurrent.*;
@@ -21,12 +20,19 @@ final class ScrcpySession implements AutoCloseable {
     }
     private final Context context;
     private final AdbManager adb;
+    private final DeviceConnection device;
+    final StreamSettings settings;
+    private final SessionDisplay displayConfig;
+    volatile String activeBackend = "", effectiveVideo = "h264", effectiveAudio = "raw";
+    volatile int displayWidth, displayHeight;
+    volatile int remoteDisplayId = -1;
+    private final List<String> notices = new CopyOnWriteArrayList<>();
     private volatile Surface surface;
     private volatile Listener listener;
     private final Object renderLock = new Object();
     private final boolean audioEnabled;
     private final List<AdbStream> streams = new CopyOnWriteArrayList<>();
-    private final ArrayBlockingQueue<byte[]> controls = new ArrayBlockingQueue<>(256);
+    private final ControlQueue controls = new ControlQueue();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong sequence = new AtomicLong(1);
     private volatile Thread controlWriter;
@@ -35,9 +41,25 @@ final class ScrcpySession implements AutoCloseable {
     volatile int width, height;
     volatile long videoFrames, audioBytes, nonSilentAudioBytes;
     private String remoteJar;
+    private final CountDownLatch videoStopped = new CountDownLatch(1);
+    private final CountDownLatch cleanupStopped = new CountDownLatch(1);
+    private volatile Attempt attempt;
+    private boolean safeVideo, safeAudio;
+    private final List<String> remoteFiles = new CopyOnWriteArrayList<>();
 
-    ScrcpySession(Context context, AdbManager adb, Surface surface, boolean audio, Listener listener) {
-        this.context = context.getApplicationContext(); this.adb = adb; this.surface = surface; this.audioEnabled = audio; this.listener = listener;
+    private static final class Attempt {
+        final AtomicBoolean stopped = new AtomicBoolean();
+        volatile boolean serverEnded, ready, audioReady;
+        volatile Exception audioFailure;
+        volatile String videoCodec, audioCodec, videoDecoder, audioDecoder;
+        volatile AdbStream video;
+        volatile ScheduledFuture<?> readiness;
+        Thread audioThread;
+    }
+
+    ScrcpySession(Context context, DeviceConnection device, Surface surface, boolean audio, Listener listener) {
+        this.context = context.getApplicationContext(); this.device = device; this.adb = device.adb; this.surface = surface; this.audioEnabled = audio; this.listener = listener;
+        settings = StreamPreferences.snapshot(context); displayConfig = new SessionDisplay(context, device);
     }
     private AdbStream open(String destination) throws Exception {
         if (closed.get()) throw new IOException("Session closed");
@@ -46,36 +68,100 @@ final class ScrcpySession implements AutoCloseable {
         return stream;
     }
     void start() {
+        if (closed.get()) { videoStopped.countDown(); return; }
         new Thread(() -> {
             try { connect(); }
             catch (Exception e) { if (!closed.get()) fail("启动投屏失败", e); }
+            finally { videoStopped.countDown(); close(); }
         }, "scrcpy-start").start();
     }
     private void connect() throws Exception {
         int id = new SecureRandom().nextInt() & 0x7fffffff;
         String suffix = String.format(Locale.ROOT, "%08x", id);
         remoteJar = "/data/local/tmp/scrcpy-android-" + suffix + ".jar";
+        remoteFiles.add(remoteJar);
         listener.status("正在上传 scrcpy 服务端…");
         try (InputStream server = context.getAssets().open("scrcpy-server.jar")) { AdbSync.push(adb, server, remoteJar); }
         if (closed.get()) { removeServerJar(); return; }
-        String command = "CLASSPATH=" + remoteJar + " app_process / com.genymobile.scrcpy.Server 5.0.1"
-                + " scid=" + suffix + " tunnel_forward=true video_codec=h264 max_size=1600 max_fps=60 video_bit_rate=6000000"
-                + " audio=" + audioEnabled + " audio_codec=raw control=true cleanup=true clipboard_autosync=true log_level=debug";
-        DebugLog.write("server launch scid=" + suffix + " audio=" + audioEnabled);
+        String encoderList = "";
+        try { encoderList = device.shell(serverCommand() + " list_encoders=true cleanup=false"); }
+        catch (Exception error) { DebugLog.error("encoder capability query", error); }
+        safeVideo = !VideoDecoder.supports(StreamSettings.videoMime(settings.videoCodec), settings.videoDecoder)
+                || (!encoderList.isEmpty() && !encoderSupported(encoderList, "video", settings.videoCodec, settings.videoEncoder));
+        safeAudio = audioEnabled && !"raw".equals(settings.audioCodec) && (!VideoDecoder.supports(StreamSettings.audioMime(settings.audioCodec), settings.audioDecoder)
+                || (!encoderList.isEmpty() && !encoderSupported(encoderList, "audio", settings.audioCodec, settings.audioEncoder)));
+        if (safeVideo) notice("所选视频编解码器不可用，回退 H.264 自动组件");
+        if (safeAudio) notice("所选音频编解码器不可用，回退 PCM");
+        if (closed.get()) return;
+        DisplaySizeState original = displayConfig.acquire();
+        int[] requested = settings.displaySize(original.width, original.height); displayWidth = requested[0]; displayHeight = requested[1];
+        DisplayFallback.run(settings.backend, route -> {
+            if (closed.get()) return;
+            displayConfig.restore();
+            displayConfig.requireRestored();
+                if ("main".equals(route) && !"original".equals(settings.resolution)) displayConfig.apply(original, requested[0], requested[1]);
+                if ("native".equals(route)) { displayWidth = original.width; displayHeight = original.height; notice("两种显示方式未能应用，使用原始主屏尺寸"); }
+                while (!closed.get()) {
+                    Attempt current = new Attempt(); attempt = current;
+                    current.videoCodec = safeVideo ? "h264" : settings.videoCodec; current.videoDecoder = safeVideo ? "" : settings.videoDecoder;
+                    current.audioCodec = safeAudio ? "raw" : settings.audioCodec; current.audioDecoder = safeAudio ? "" : settings.audioDecoder;
+                    try { runAttempt(route, requested, current, safeVideo, safeAudio); return; }
+                    catch (Exception error) {
+                        if (current.ready || closed.get()) throw error;
+                        if (!safeVideo || !safeAudio) {
+                            if ((safeVideo || ("h264".equals(settings.videoCodec) && settings.videoEncoder.isEmpty() && settings.videoDecoder.isEmpty()))
+                                    && (safeAudio || ("raw".equals(settings.audioCodec)))) throw error;
+                            safeVideo = safeAudio = true; notice("音视频启动失败，使用 H.264 / PCM 重试：" + error.getMessage());
+                        } else throw error;
+                    } finally { stopAttempt(current); }
+                }
+        }, () -> { Attempt current = attempt; return !closed.get() && (current == null || !current.ready); },
+                (route, error) -> notice(("virtual".equals(route) ? "虚拟显示" : "主屏尺寸") + "未能启用，尝试下一种方式：" + error.getMessage()));
+    }
+    private String serverCommand() { return "CLASSPATH=" + remoteJar + " app_process / com.genymobile.scrcpy.Server 5.0.1"; }
+    static boolean encoderSupported(String list, String kind, String codec, String component) {
+        for (String line : list.split("\n")) if (line.contains("--" + kind + "-codec=" + codec + " ")
+                && (component.isEmpty() || line.matches(".*--" + kind + "-encoder=" + java.util.regex.Pattern.quote(component) + "(?:\\s.*)?"))) return true;
+        return false;
+    }
+    private void notice(String text) {
+        notices.add(text); DebugLog.write("stream fallback: " + text); listener.status(text);
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> android.widget.Toast.makeText(context, text, android.widget.Toast.LENGTH_LONG).show());
+    }
+    private void runAttempt(String route, int[] requested, Attempt current, boolean safeVideo, boolean safeAudio) throws Exception {
+        int id = new SecureRandom().nextInt() & 0x7fffffff; String suffix = String.format(Locale.ROOT, "%08x", id);
+        String launchJar = "/data/local/tmp/scrcpy-android-run-" + suffix + ".jar"; remoteFiles.add(launchJar);
+        String copied = device.shell("cp " + RuntimeState.quote(remoteJar) + " " + RuntimeState.quote(launchJar) + "; echo SFA_COPY_EXIT=$?");
+        if (!copied.contains("SFA_COPY_EXIT=0")) throw new IOException("无法准备服务端启动文件");
+        String command = serverCommand().replace(remoteJar, launchJar) + " scid=" + suffix + " tunnel_forward=true video_codec=" + current.videoCodec
+                + " max_size=" + settings.maxSize + " max_fps=" + settings.fps + " video_bit_rate=" + settings.videoBitRate
+                + " audio=" + audioEnabled + " audio_codec=" + current.audioCodec + " audio_bit_rate=" + settings.audioBitRate
+                + " control=true cleanup=true clipboard_autosync=true log_level=debug";
+        if (!safeVideo && !settings.videoEncoder.isEmpty()) command += " video_encoder=" + settings.videoEncoder;
+        if (!safeAudio && !"raw".equals(current.audioCodec) && !settings.audioEncoder.isEmpty()) command += " audio_encoder=" + settings.audioEncoder;
+        if ("virtual".equals(route)) command += " new_display=" + requested[0] + "x" + requested[1] + " vd_destroy_content=false";
+        remoteDisplayId = "virtual".equals(route) ? -1 : 0;
+        DebugLog.write("server launch route=" + route + " video=" + current.videoCodec + " audio=" + current.audioCodec + " maxSize=" + settings.maxSize);
         AdbStream shell = open("shell:" + command);
         new Thread(() -> {
             try {
                 BufferedReader reader = new BufferedReader(new InputStreamReader(shell.openInputStream(), StandardCharsets.UTF_8)); String line;
-                while ((line = reader.readLine()) != null) DebugLog.write("server " + line);
-            } catch (IOException e) { if (!closed.get()) DebugLog.error("server log", e); }
+                while ((line = reader.readLine()) != null) {
+                    DebugLog.write("server " + line);
+                    java.util.regex.Matcher display = java.util.regex.Pattern.compile("New display: .*\\(id=(\\d+)\\)").matcher(line);
+                    if (!current.stopped.get() && display.find()) remoteDisplayId = Integer.parseInt(display.group(1));
+                }
+            } catch (IOException e) { if (!closed.get() && !current.stopped.get()) DebugLog.error("server log", e); }
+            finally { current.serverEnded = true; }
         }, "scrcpy-server-log").start();
 
         AdbStream video = null; long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
-        while (!closed.get() && System.nanoTime() < deadline) {
+        while (!closed.get() && !current.serverEnded && System.nanoTime() < deadline) {
             try { video = open("localabstract:scrcpy_" + suffix); break; }
             catch (IOException e) { Thread.sleep(100); }
         }
         if (video == null) throw new IOException("服务端未打开投屏通道，请查看服务端日志");
+        current.video = video;
         DataInputStream videoInput = new DataInputStream(video.openInputStream());
         AdbStream first = video;
         ScheduledFuture<?> handshakeTimeout = RuntimeState.timers.schedule(() -> RuntimeState.close(first), 15, TimeUnit.SECONDS);
@@ -85,12 +171,24 @@ final class ScrcpySession implements AutoCloseable {
             AdbStream control = open("localabstract:scrcpy_" + suffix);
             byte[] name = new byte[64]; videoInput.readFully(name);
             String device = new String(name, StandardCharsets.UTF_8).replace("\0", "").trim();
-            if (videoInput.readInt() != 0x68323634) throw new IOException("Expected H.264 stream");
-            startControl(control);
-            if (audio != null) startAudio(audio);
-            listener.status("已连接：" + device);
+            if (videoInput.readInt() != StreamSettings.videoId(current.videoCodec)) throw new IOException("Unexpected video codec");
+            // Virtual displays may be empty until an app is started. This setup message
+            // bypasses the expiring input queue and is written before its writer starts.
+            if ("virtual".equals(route)) { byte[] start = ControlProtocol.startApp(virtualApp()); control.write(start, 0, start.length); }
+            if (audio != null) startAudio(audio, current); else current.audioReady = true;
+            activeBackend = route; effectiveVideo = current.videoCodec; effectiveAudio = current.audioCodec;
             DebugLog.write("scrcpy connected device=" + device);
-        } finally { handshakeTimeout.cancel(false); }
+            handshakeTimeout.cancel(false);
+            AdbStream watchedVideo = video;
+            ScheduledFuture<?> firstFrameTimeout = RuntimeState.timers.schedule(() -> { if (!current.ready) RuntimeState.close(watchedVideo); }, 20, TimeUnit.SECONDS);
+            current.readiness = RuntimeState.timers.scheduleWithFixedDelay(() -> {
+                if (closed.get() || current.stopped.get()) { current.readiness.cancel(false); return; }
+                if (currentRenderedFrames() == 0 || !current.audioReady) return;
+                current.ready = true; current.readiness.cancel(false); firstFrameTimeout.cancel(false);
+                startControl(control, current); listener.size(width, height);
+                listener.status("已连接：" + device + " · " + activeBackend + " · " + effectiveVideo + "/" + effectiveAudio
+                        + (notices.isEmpty() ? "" : "（已回退，详见日志）"));
+            }, 50, 50, TimeUnit.MILLISECONDS);
         try {
             while (!closed.get()) {
                 MediaPacket packet = MediaPacket.read(videoInput);
@@ -99,26 +197,46 @@ final class ScrcpySession implements AutoCloseable {
                         if (decoder != null) { videoFrames += decoder.frames.get(); decoder.close(); decoder = null; }
                         width = packet.width; height = packet.height;
                         DebugLog.write("video session " + width + "x" + height); listener.size(width, height);
-                        decoder = new VideoDecoder(surface, width, height);
+                        decoder = new VideoDecoder(surface, width, height, StreamSettings.videoMime(current.videoCodec), current.videoDecoder);
                     }
                 } else {
-                    VideoDecoder current = decoder;
-                    if (current == null) throw new IOException("Video packet before session metadata");
-                    current.feed(packet);
+                    VideoDecoder active = decoder;
+                    if (active == null) throw new IOException("Video packet before session metadata");
+                    active.feed(packet);
                 }
             }
-        } catch (Exception e) { if (!closed.get()) fail("投屏连接已断开", e); }
+        } catch (Exception e) { if (current.audioFailure != null) throw current.audioFailure; throw e; }
         finally {
+            firstFrameTimeout.cancel(false);
+            current.readiness.cancel(false);
             synchronized (renderLock) {
-                VideoDecoder current = decoder; decoder = null;
-                if (current != null) { videoFrames += current.frames.get(); current.close(); }
+                VideoDecoder active = decoder; decoder = null;
+                if (active != null) { videoFrames += active.frames.get(); active.close(); }
             }
-            close();
         }
+        } finally { handshakeTimeout.cancel(false); }
     }
+    private String virtualApp() throws Exception {
+        if (!settings.virtualApp.isEmpty()) {
+            if (!device.shell("pm path " + settings.virtualApp).contains("package:")) throw new IOException("虚拟显示启动应用未安装");
+            return settings.virtualApp;
+        }
+        try {
+            String resolved = device.shell("cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME");
+            for (String line : resolved.split("\n")) { String pkg = line.trim().split("/")[0]; if (line.contains("/") && pkg.matches("[A-Za-z0-9_.]+")) return pkg; }
+        } catch (Exception error) { DebugLog.error("resolve virtual launcher", error); }
+        return "com.android.settings";
+    }
+    private void stopAttempt(Attempt current) {
+        current.stopped.set(true);
+        for (AdbStream stream : streams) RuntimeState.close(stream); streams.clear();
+        if (current.audioThread != null) try { current.audioThread.join(1500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+    void afterVideoStopped(Runnable action) { new Thread(() -> { try { videoStopped.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } finally { action.run(); } }, "remote-output-cleanup").start(); }
     long renderedFrames() { VideoDecoder current = decoder; return videoFrames + (current == null ? 0 : current.frames.get()); }
     long currentRenderedFrames() { VideoDecoder current = decoder; return current == null ? 0 : current.frames.get(); }
     boolean isClosed() { return closed.get(); }
+    boolean isStarted() { Attempt current = attempt; return current != null && current.ready && !closed.get(); }
     boolean isOwnedBy(Listener owner) { return listener == owner; }
     void attachOutput(Surface replacement, Listener owner) throws IOException {
         synchronized (renderLock) {
@@ -129,32 +247,32 @@ final class ScrcpySession implements AutoCloseable {
         }
         owner.size(width, height); DebugLog.write("video output transferred without reconnect");
     }
-    private void startControl(AdbStream stream) {
+    private void startControl(AdbStream stream, Attempt attempt) {
         controlWriter = new Thread(() -> {
-            Map<Long, byte[]> activePointers = new HashMap<>();
+            ControlInputState inputs = new ControlInputState();
             try {
-                OutputStream out = stream.openOutputStream();
-                while (!closed.get() || !controls.isEmpty()) {
-                    byte[] packet = controls.poll(100, TimeUnit.MILLISECONDS);
+                while (!closed.get() && !attempt.stopped.get()) {
+                    if (!controls.awaitPending(100)) continue;
+                    // Leave entries in the queue while waiting for the previous ADB WRTE's OKAY.
+                    // Otherwise a dequeued, expired DOWN/MOVE could still execute after recovery.
+                    if (!stream.awaitWriteReady(100, TimeUnit.MILLISECONDS) || closed.get()) continue;
+                    byte[] packet = controls.poll();
                     if (packet == null) continue;
-                    out.write(packet); out.flush();
-                    if (packet[0] == 2) {
-                        long pointer = ByteBuffer.wrap(packet, 2, 8).getLong();
-                        if (packet[1] == 1) activePointers.remove(pointer);
-                        else {
-                            byte[] up = packet.clone(); up[1] = 1; up[22] = 0; up[23] = 0; activePointers.put(pointer, up);
-                        }
-                    }
+                    byte[] ready = packet == ControlQueue.RESET ? inputs.releases() : inputs.prepare(packet);
+                    if (ready.length == 0) continue;
+                    stream.write(ready, 0, ready.length);
+                    if (packet == ControlQueue.RESET) inputs.released(); else inputs.sent(ready);
                 }
-                for (byte[] up : activePointers.values()) out.write(up);
-                out.flush();
+                byte[] releases = inputs.releases();
+                if (releases.length > 0) stream.write(releases, 0, releases.length);
             } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
-            catch (Exception e) { if (!closed.get()) fail("控制通道断开", e); }
+            catch (Exception e) { if (!closed.get() && !attempt.stopped.get()) fail("控制通道断开", e); }
+            finally { DebugLog.write("control queue closed " + controls.stats()); }
         }, "scrcpy-control-output"); controlWriter.start();
         new Thread(() -> {
             try {
                 DataInputStream in = new DataInputStream(stream.openInputStream());
-                while (!closed.get()) {
+                while (!closed.get() && !attempt.stopped.get()) {
                     int type = in.readUnsignedByte();
                     if (type == 0) {
                         int length = in.readInt();
@@ -166,43 +284,61 @@ final class ScrcpySession implements AutoCloseable {
                     else if (type == 2) { in.readUnsignedShort(); int n = in.readUnsignedShort(); byte[] bytes = new byte[n]; in.readFully(bytes); }
                     else throw new IOException("Unknown device message=" + type);
                 }
-            } catch (Exception e) { if (!closed.get()) fail("控制通道断开", e); }
+            } catch (Exception e) { if (!closed.get() && !attempt.stopped.get()) fail("控制通道断开", e); }
         }, "scrcpy-control-input").start();
     }
-    private void startAudio(AdbStream stream) {
-        new Thread(() -> {
+    private void startAudio(AdbStream stream, Attempt attempt) {
+        attempt.audioThread = new Thread(() -> {
             AudioTrack audio = null;
+            AudioPlayback playback = null;
             try {
                 DataInputStream in = new DataInputStream(stream.openInputStream()); int codec = in.readInt();
-                if (codec == 0 || codec == 1) { listener.status("视频已连接；被控端未能采集声音"); DebugLog.write("audio disabled code=" + codec); return; }
-                if (codec != 0x00726177) throw new IOException("Expected raw PCM audio");
+                if (codec == 0 || codec == 1) {
+                    if (!"raw".equals(attempt.audioCodec)) throw new IOException("所选音频编码未能启动");
+                    attempt.audioReady = true; listener.status("视频已连接；被控端未能采集声音"); DebugLog.write("audio disabled code=" + codec); return;
+                }
+                if (codec != StreamSettings.audioId(attempt.audioCodec)) throw new IOException("Unexpected audio codec");
                 int minimum = AudioTrack.getMinBufferSize(48000, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT);
                 audio = new AudioTrack.Builder().setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()).setAudioFormat(new AudioFormat.Builder()
                         .setSampleRate(48000).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build())
                         .setBufferSizeInBytes(Math.max(minimum, 19200)).setTransferMode(AudioTrack.MODE_STREAM).build();
                 track = audio; audio.play(); DebugLog.write("audio playback PCM 48000 Hz stereo");
-                while (!closed.get()) {
-                    MediaPacket packet = MediaPacket.read(in);
-                    if (packet.session || packet.config) continue;
-                    for (byte value : packet.data) if (value != 0) nonSilentAudioBytes++;
+                AudioTrack output = audio;
+                playback = new AudioPlayback(attempt.audioCodec, attempt.audioDecoder, () -> !closed.get() && !attempt.stopped.get(), pcm -> {
+                    for (byte value : pcm) if (value != 0) nonSilentAudioBytes++;
                     int offset = 0;
-                    while (offset < packet.data.length && !closed.get()) {
-                        int n = audio.write(packet.data, offset, packet.data.length - offset);
-                        if (n <= 0) throw new IOException("AudioTrack write=" + n);
-                        offset += n; audioBytes += n;
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                    while (offset < pcm.length && !closed.get() && !attempt.stopped.get()) {
+                        int n = output.write(pcm, offset, pcm.length - offset, AudioTrack.WRITE_NON_BLOCKING);
+                        if (n < 0) throw new IOException("AudioTrack write=" + n);
+                        if (n == 0) {
+                            if (System.nanoTime() >= deadline) throw new IOException("Audio output stalled");
+                            try { Thread.sleep(5); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException("Audio stopped",e); }
+                            continue;
+                        }
+                        offset += n; audioBytes += n; attempt.audioReady = true;
                     }
+                });
+                while (!closed.get() && !attempt.stopped.get()) {
+                    MediaPacket packet = MediaPacket.read(in);
+                    if (!packet.session) playback.feed(packet);
                 }
-            } catch (Exception e) { if (!closed.get()) { DebugLog.error("audio", e); listener.status("视频继续；声音同步失败，请查看日志"); } }
+            } catch (Exception e) { if (!closed.get() && !attempt.stopped.get()) {
+                DebugLog.error("audio", e);
+                if (!attempt.ready && !"raw".equals(attempt.audioCodec)) { attempt.audioFailure = e; RuntimeState.close(attempt.video); }
+                else { attempt.audioReady = true; listener.status("视频继续；声音同步失败，请查看日志"); }
+            } }
             finally {
+                if (playback != null) try { playback.close(); } catch (RuntimeException error) { DebugLog.error("audio decoder close", error); }
                 track = null;
                 if (audio != null) { try { audio.stop(); } catch (RuntimeException ignored) { } audio.release(); }
                 RuntimeState.close(stream); DebugLog.write("audio closed bytes=" + audioBytes);
             }
-        }, "scrcpy-audio").start();
+        }, "scrcpy-audio"); attempt.audioThread.start();
     }
     void send(byte[] packet) {
-        if (!closed.get() && !controls.offer(packet)) fail("控制队列阻塞，已停止会话以释放触点", new IOException("Control queue overflow"));
+        if (!closed.get()) controls.offer(packet);
     }
     void key(int code) { send(ControlProtocol.key(0, code)); send(ControlProtocol.key(1, code)); }
     void clipboard(String text, boolean paste) { send(ControlProtocol.clipboard(sequence.getAndIncrement(), text, paste)); }
@@ -210,6 +346,7 @@ final class ScrcpySession implements AutoCloseable {
     private void fail(String stage, Throwable e) { DebugLog.error(stage, e); if (!closed.get()) { close(); listener.ended(stage + "：" + e.getMessage()); } }
     @Override public void close() {
         if (!closed.compareAndSet(false, true)) return;
+        controls.close();
         // Close asynchronously: never block the UI on a broken USB/TCP write.
         new Thread(() -> {
             if (controlWriter != null) {
@@ -218,14 +355,17 @@ final class ScrcpySession implements AutoCloseable {
             }
             for (AdbStream stream : streams) RuntimeState.close(stream);
             streams.clear();
-            // Upstream cleanup normally deletes its jar. Also remove a jar uploaded before launch failed.
-            removeServerJar();
+            try { videoStopped.await(); displayConfig.release(); removeServerJar(); }
+            catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+            finally { cleanupStopped.countDown(); }
         }, "scrcpy-close").start();
         DebugLog.write("session closing frames=" + renderedFrames() + " audioBytes=" + audioBytes);
     }
+    void awaitCleanup() { try { cleanupStopped.await(25, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
     private void removeServerJar() {
         if (remoteJar == null) return;
-        try (AdbStream ignored = adb.openStream("shell:rm -f " + RuntimeState.quote(remoteJar))) { }
+        StringBuilder command = new StringBuilder("shell:rm -f"); for (String file : remoteFiles) command.append(' ').append(RuntimeState.quote(file));
+        try (AdbStream ignored = adb.openStream(command.toString())) { }
         catch (Exception ignored) { }
     }
 }

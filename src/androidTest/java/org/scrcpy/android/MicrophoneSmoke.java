@@ -14,8 +14,8 @@ final class MicrophoneSmoke {
         throw new AssertionError(failure);
     }
     static String run(Instrumentation test, Context context, RuntimeState runtime, String host, int port) throws Exception {
-        if (!runtime.adb.connect(host, port)) throw new AssertionError("ADB connection failed");
-        runtime.target = host + ":" + port;
+        if (runtime.connect(host, port) == null) throw new AssertionError("ADB connection failed");
+
         RemoteActivity remote = (RemoteActivity)test.startActivitySync(new Intent(context, RemoteActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("audio", false));
         AtomicReference<String> failure = new AtomicReference<>();
@@ -32,7 +32,7 @@ final class MicrophoneSmoke {
             }
             public void close() { closed = true; }
         };
-        MicrophoneForwarder forwarding = new MicrophoneForwarder(context, runtime, "org.scrcpy.android.test", new MicrophoneForwarder.Listener() {
+        MicrophoneForwarder forwarding = new MicrophoneForwarder(context, runtime.current(), "org.scrcpy.android.test", new MicrophoneForwarder.Listener() {
             public void started(MicrophoneForwarder current) { }
             public void stopped(MicrophoneForwarder current, String error) { if (error != null) failure.set(error); }
         }, tone);
@@ -66,7 +66,7 @@ final class MicrophoneSmoke {
     private static void verifyStall(Context context, RuntimeState runtime) throws Exception {
         java.util.concurrent.CountDownLatch closed = new java.util.concurrent.CountDownLatch(1);
         AtomicReference<String> stopped = new AtomicReference<>();
-        MicrophoneForwarder stalled = new MicrophoneForwarder(context, runtime, "org.scrcpy.android.test", new MicrophoneForwarder.Listener() {
+        MicrophoneForwarder stalled = new MicrophoneForwarder(context, runtime.current(), "org.scrcpy.android.test", new MicrophoneForwarder.Listener() {
             public void started(MicrophoneForwarder current) { }
             public void stopped(MicrophoneForwarder current, String error) { stopped.set(error); }
         }, new MicrophoneForwarder.PcmSource() {

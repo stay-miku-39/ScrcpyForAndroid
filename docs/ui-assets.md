@@ -9,3 +9,5 @@
 - [原始 Apache-2.0 许可](https://github.com/google/material-design-icons/blob/master/LICENSE)，本地副本 [licenses/Apache-2.0.txt](licenses/Apache-2.0.txt)。
 
 `ic_window_resize.xml` 是项目自有的三条斜线缩放标记，左侧镜像显示。标记所在区域只响应拖动，不是点击缩放按钮。电源和全屏按钮保留中文内容描述及提示，完整设备名通过标题内容描述提供。
+
+0.5.0 将单个窗口的视图/几何代码移至 `FloatingWindow.java`，由 `FloatingWindowService` 按设备管理多个实例；组件主题、图标、许可、等高两栏、圆角裁切和拖动手柄保持相同。

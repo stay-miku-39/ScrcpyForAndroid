@@ -12,14 +12,16 @@ final class VideoDecoder implements AutoCloseable {
     private volatile Throwable failure;
     private final Thread drain;
     final AtomicLong frames = new AtomicLong();
+    private long droppedFrames;
 
-    VideoDecoder(Surface surface, int width, int height) throws IOException {
-        codec = MediaCodec.createDecoderByType("video/avc");
+    VideoDecoder(Surface surface, int width, int height, String mime, String name) throws IOException {
+        codec = createCodec(mime, name);
         try {
-            MediaFormat format = MediaFormat.createVideoFormat("video/avc", width, height);
+            MediaFormat format = MediaFormat.createVideoFormat(mime, width, height);
             format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 4 * 1024 * 1024);
             format.setInteger(MediaFormat.KEY_PRIORITY, 0);
             format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
+            format.setInteger(MediaFormat.KEY_ALLOW_FRAME_DROP, 1);
             codec.configure(format, surface, null, 0); codec.start();
         } catch (RuntimeException e) { codec.release(); throw e; }
         drain = new Thread(() -> {
@@ -27,11 +29,43 @@ final class VideoDecoder implements AutoCloseable {
             try {
                 while (running) {
                     int index = codec.dequeueOutputBuffer(info, 10000);
-                    if (index >= 0) { codec.releaseOutputBuffer(index, true); if (frames.incrementAndGet() == 1) DebugLog.write("video first frame rendered"); }
+                    if (index >= 0) {
+                        droppedFrames += VideoFrameDrain.renderLatest(index, () -> {
+                            int next = codec.dequeueOutputBuffer(info, 0);
+                            if (next == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) DebugLog.write("video decoder format=" + codec.getOutputFormat());
+                            return next;
+                        }, (buffer, render) -> codec.releaseOutputBuffer(buffer, render));
+                        if (frames.incrementAndGet() == 1) DebugLog.write("video first frame rendered");
+                    }
                     else if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) DebugLog.write("video decoder format=" + codec.getOutputFormat());
                 }
             } catch (RuntimeException e) { if (running) { failure = e; DebugLog.error("video output", e); } }
         }, "scrcpy-video-output"); drain.start();
+    }
+    static boolean supports(String mime, String name) {
+        for (MediaCodecInfo info : new MediaCodecList(MediaCodecList.REGULAR_CODECS).getCodecInfos()) {
+            if (info.isEncoder() || (!name.isEmpty() && !name.equals(info.getName()))) continue;
+            for (String type : info.getSupportedTypes()) if (mime.equalsIgnoreCase(type)) return true;
+        }
+        return false;
+    }
+    private static MediaCodec createCodec(String mime, String name) throws IOException {
+        MediaCodec preferred = name.isEmpty() ? MediaCodec.createDecoderByType(mime) : MediaCodec.createByCodecName(name);
+        // The emulator's virtual decoder can accept setOutputSurface(), then
+        // keep queueing to the abandoned old producer (-32), or release itself.
+        // A real software component handles SurfaceView/texture handoffs reliably.
+        if (name.isEmpty() && preferred.getName().startsWith("c2.goldfish.")) {
+            for (MediaCodecInfo info : new MediaCodecList(MediaCodecList.REGULAR_CODECS).getCodecInfos()) {
+                if (info.isEncoder() || !info.isSoftwareOnly() || info.getName().startsWith("c2.goldfish.")) continue;
+                for (String type : info.getSupportedTypes()) if (mime.equalsIgnoreCase(type)) {
+                    try {
+                        MediaCodec software = MediaCodec.createByCodecName(info.getName());
+                        preferred.release(); DebugLog.write("video decoder=" + info.getName() + " goldfish Surface handoff fallback"); return software;
+                    } catch (IOException error) { DebugLog.error("software decoder unavailable", error); }
+                }
+            }
+        }
+        DebugLog.write("video decoder=" + preferred.getName()); return preferred;
     }
     void feed(MediaPacket packet) throws IOException {
         while (running) {
@@ -49,6 +83,6 @@ final class VideoDecoder implements AutoCloseable {
         running = false;
         try { drain.join(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         try { codec.stop(); } finally { codec.release(); }
-        DebugLog.write("video decoder closed frames=" + frames.get());
+        DebugLog.write("video decoder closed frames=" + frames.get() + " dropped=" + droppedFrames);
     }
 }

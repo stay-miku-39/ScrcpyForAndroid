@@ -117,6 +117,56 @@ public class AdbStreamTest {
     }
 
     @Test(timeout = 30_000)
+    public void waitingForWriteCreditTimesOutWithoutSendingOrConsumingCredit() throws Exception {
+        AdbStream stream = connectAndOpen(AdbProtocol.A_VERSION_SKIP_CHECKSUM, 4096);
+        assertTrue(stream.awaitWriteReady(0, TimeUnit.MILLISECONDS));
+        assertTrue(stream.awaitWriteReady(0, TimeUnit.MILLISECONDS));
+        stream.write(new byte[]{1}, 0, 1);
+        assertArrayEquals(new byte[]{1}, mServer.expect(AdbProtocol.A_WRTE).payload);
+        assertTrue(!stream.awaitWriteReady(20, TimeUnit.MILLISECONDS));
+        assertTrue(!stream.awaitWriteReady(0, TimeUnit.MILLISECONDS));
+        mServer.setSoTimeout(100);
+        try { mServer.readMessage(); fail("Waiting must not emit stale data"); }
+        catch (SocketTimeoutException expected) { }
+        mServer.setSoTimeout(10_000);
+        mServer.sendOkay(SERVER_ID, mClientId);
+        assertTrue(stream.awaitWriteReady(5, TimeUnit.SECONDS));
+        stream.write(new byte[]{2}, 0, 1);
+        assertArrayEquals(new byte[]{2}, mServer.expect(AdbProtocol.A_WRTE).payload);
+    }
+
+    @Test(timeout = 30_000)
+    public void creditWaitWakesOnDelayedOkay() throws Exception {
+        AdbStream stream = connectAndOpen(AdbProtocol.A_VERSION_SKIP_CHECKSUM, 4096);
+        stream.write(new byte[]{1}, 0, 1); mServer.expect(AdbProtocol.A_WRTE);
+        Future<Boolean> ready = mExecutor.submit(() -> stream.awaitWriteReady(5, TimeUnit.SECONDS));
+        mServer.sendOkay(SERVER_ID, mClientId);
+        assertTrue(ready.get(10, TimeUnit.SECONDS));
+    }
+
+    @Test(timeout = 30_000)
+    public void creditWaitFailsOnPeerCloseInsteadOfSpinning() throws Exception {
+        AdbStream stream = connectAndOpen(AdbProtocol.A_VERSION_SKIP_CHECKSUM, 4096);
+        stream.write(new byte[]{1}, 0, 1); mServer.expect(AdbProtocol.A_WRTE);
+        Future<Boolean> ready = mExecutor.submit(() -> stream.awaitWriteReady(5, TimeUnit.SECONDS));
+        mServer.sendClse(SERVER_ID, mClientId);
+        try { ready.get(10, TimeUnit.SECONDS); fail("Closed stream must fail"); }
+        catch (ExecutionException expected) { assertTrue(expected.getCause() instanceof IOException); }
+    }
+
+    @Test(timeout = 30_000)
+    public void creditWaitRemainsInterruptibleForSessionClose() throws Exception {
+        AdbStream stream = connectAndOpen(AdbProtocol.A_VERSION_SKIP_CHECKSUM, 4096);
+        stream.write(new byte[]{1}, 0, 1); mServer.expect(AdbProtocol.A_WRTE);
+        Future<Boolean> interrupted = mExecutor.submit(() -> {
+            Thread.currentThread().interrupt();
+            try { stream.awaitWriteReady(5, TimeUnit.SECONDS); return false; }
+            catch (InterruptedException expected) { return true; }
+        });
+        assertTrue(interrupted.get(10, TimeUnit.SECONDS));
+    }
+
+    @Test(timeout = 30_000)
     public void concurrentShortCommandsKeepUniqueStreamsAndAcceptImmediateEof() throws Exception {
         connectAndOpen(AdbProtocol.A_VERSION_SKIP_CHECKSUM, 4096);
         java.util.List<Future<AdbStream>> commands = new java.util.ArrayList<>();

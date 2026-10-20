@@ -1,4 +1,152 @@
-# Validation — 2026-10-19
+# Validation history
+
+## 0.6.0-dev resolution and media settings — 2026-10-21
+
+The settings page now saves a global startup snapshot: logical display size,
+preferred main-screen/independent virtual-display route, encoded-video maximum
+edge, video/audio formats, bit rates, frame-rate limit and optional named codec
+components. Existing sessions and Surface handoffs keep their original snapshot.
+Main-screen overrides retain their prior override/reset value for restoration;
+startup fallback is bounded and does not become automatic reconnect.
+
+- `:assembleDebug`, `:assembleDebugAndroidTest`: PASS, versionCode 8,
+  versionName `0.6.0-dev`, compile/target API 36.
+- `:testDebugUnitTest`: 44 PASS. Ten new tests cover immutable settings,
+  independent logical/encoded dimensions, local-aspect presets, parameter and
+  shell-fragment rejection, prior override preservation, virtual-display rotation
+  selection, pinned codec IDs/component matching and bounded route failure policy.
+- `:lintDebug`: PASS, 0 errors / 28 warnings.
+- Debug APK signature verification PASS; the signing-certificate SHA-256 matches
+  the preserved 0.5.1 APK. The deliverable is `dist/ScrcpyForAndroid-0.6.0-dev-debug.apk`
+  with its SHA-256 appended to `dist/SHA256SUMS.txt`; previous APKs are retained.
+- The scrcpy submodule remains pinned and unmodified at 5.0.1. No vendored ADB
+  transport changes were made for this feature; its separate tests were not rerun.
+
+Integration used two explicitly addressed Android 16 / API 36 x86_64 emulators
+as controller and target. The target already had a reduced logical-size override;
+tests restore that exact prior value rather than resetting to physical pixels.
+Test installations use replacement with application data and RSA identity kept.
+
+| Check | Actual result |
+| --- | --- |
+| `mediaCase main` | PASS: real settings page saves custom size; live session and target size remain unchanged; reopening applies saved dimensions; fullscreen/floating fit is maximal and proportional; actual touch, non-silent PCM and same-session handoff work; close restores prior target size and preserves ADB |
+| `mediaCase virtual` | PASS: independent display ID and requested dimensions, target main-screen size unchanged, actual touch and non-silent audio, fullscreen/floating same-session handoff, display removal on close; original-size selection still obeys virtual preference |
+| `mediaCase fallback` | PASS: unavailable virtual-start application falls back to main-screen route; nonexistent encoder/decoder selections fall back to H.264/PCM with playable non-silent audio |
+| `mediaCase presets` | PASS: original dimensions with unlimited video, local controller dimensions with a lower encoded edge cap, and controller-aspect preset on a virtual display without a video edge cap; actual dimensions and proportional fullscreen fit asserted |
+| `mediaCase codecs` | PASS: H.264 baseline plus actual H.265, AV1, VP8 and VP9 video decoding; AAC, Opus and FLAC decode to non-silent PCM; explicit Android software AVC/AAC encoder/decoder component names work |
+| `defaultMedia true`, `windowUi true` | PASS: saved RSA identity, Shell, file SHA-256 roundtrip, scan, video/non-silent audio, two-pointer input, bidirectional text clipboard, one rotation, HOME, physical volume down/up/repeat, floating touch and same-session roundtrip; closing remote retains ADB; temporary default media configuration is restored |
+
+All PASS integration rows returned both `INSTRUMENTATION_RESULT: result=PASS ...`
+and final `INSTRUMENTATION_CODE: -1`. Actual screenshots of settings, fullscreen
+and floating main/virtual output were inspected. Early compile/test-harness
+failures were repaired and rerun; they are not counted as passing runs.
+Codec and default-basic integration were repeated after the final bounded audio
+decoder/output-loop change, and both passed. The production manifest was checked
+to exclude the instrumentation runner and probe activities.
+
+The opposite display-failure direction and the both-unsupported-to-native path
+are covered by deterministic unit tests of the production fallback policy;
+these emulators do not provide an actual OEM rejection of main-screen resizing
+or virtual-display creation. Physical devices, hardware codec variation,
+long-duration power/thermal behavior, subjective codec quality/latency and
+disconnection/force-stop recovery of a persisted size lease remain unverified.
+The existing four-way rotation issue below is not declared fixed. Pairing/PIN,
+physical OTG, microphone routing, power-menu and unrelated UI suites were not
+rerun for this feature. There is still no independent audio-clock drift correction.
+
+## 0.5.1 bounded control freshness and decoded-frame catch-up — 2026-10-20
+
+Investigation confirmed a 256-entry FIFO with no expiry: a failed offer ended
+the entire session. The writer also removed a packet before waiting for ADB's
+previous WRTE acknowledgement. Video output rendered every decoded buffer.
+
+The replacement control queue has a 64-entry / 512 KiB bound and a 250 ms
+pre-send deadline, coalesces pending MOVE per pointer without crossing DOWN/UP,
+and evicts oldest work instead of ending the session. Selection/expiry occurs
+after WRTE credit is available. Dropped input schedules release of transmitted
+touches and keys; orphan MOVE/repeat/UP is suppressed until a fresh DOWN. A
+cancelled hold requires lifting/repressing. Close discards queued actions and
+briefly attempts only releases. Video retains the H.264 reference chain, drops
+older ready decoded outputs, and presents the latest available output within a
+bounded pass. The pinned scrcpy submodule is unchanged.
+
+- `:testDebugUnitTest`: 34 PASS, including 9 queue/input-state and 4 video-drain
+  tests. The five-pointer slow-consumer fixture submits 250,000 MOVE operations
+  across 500 gestures, simulates ACK outages with a deterministic clock, checks
+  the queue bound and independently verifies no orphan/stuck transmitted touches.
+  Expired UP and mixed touch/chord releases, reverse key release order, repeat
+  filtering, clipboard byte limits, pointer reuse and close discard are covered.
+- `:adb-library:testDebugUnitTest`: 29 PASS; 2 physical USB checks SKIP.
+  Four new real loopback TCP tests cover non-consuming WRTE readiness, no-credit
+  timeout with no writes, delayed OKAY, peer close and interruption. Existing
+  chunking, checksum, flow control, EOF, authentication and simulated USB tests
+  were also run. Loopback readiness tests do not establish physical OTG behavior.
+- `:assembleDebug`, `:assembleDebugAndroidTest`: PASS, compile/target API 36.
+- `:lintDebug`: PASS, 0 errors / 27 warnings.
+- Debug APK signing-certificate SHA-256 matches the preserved 0.5.0 APK;
+  signature verification PASS. No installation/data reset was performed.
+
+These are JVM/loopback and build checks. No Android device instrumentation,
+actual multi-finger weak-Wi-Fi use, Surface hardware decoder/frame-drop behavior,
+fullscreen/window/background handoff, power-menu behavior or latency benchmark
+was run for this patch. The unresolved four-way video reconfiguration failure
+recorded for 0.5.0 below remains unresolved and is not counted as retested.
+
+The 250 ms limit applies to queued work before starting a write, not remote
+execution. Already-started TCP/USB writes and partially transmitted large
+clipboard messages cannot safely be abandoned. TCP retransmission and encoded
+video/network backlog can still add delay; decoded-output dropping alone does
+not promise low latency when sustained bandwidth is below the configured rate.
+Releases also require a writable control channel. Pairing/identity formats,
+media protocol, audio and device/output ownership are unchanged by this patch.
+
+## 0.5.0 multiple ADB connections and background sessions — 2026-10-20
+
+The controller now keeps one transport/session per endpoint, multiple independent
+floating windows, and a single fullscreen Activity. Background keep-alive is on
+by default; automatic fullscreen-to-window is an independent opt-in. Remote input,
+name/rotation queries and microphone cleanup retain their original device binding.
+The scrcpy submodule and vendored ADB sources are unchanged.
+
+- `:assembleDebug`, `:assembleDebugAndroidTest`: PASS, compile/target API 36.
+- `:testDebugUnitTest`: 21 PASS.
+- `:adb-library:testDebugUnitTest`: 25 PASS; 2 physical USB checks SKIP.
+- `:lintDebug`: PASS, 0 errors / 28 warnings.
+
+Integration used three dedicated Android 16 / API 36 user-build emulators:
+one controller and two explicitly addressed TCP ADB targets. The simultaneous
+sessions used temporary 360×800 target displays to reduce software encoding load;
+legacy window and microphone regression used the target's original 1080×2400
+display (scrcpy max edge 1600). These are functional checks, not a throughput or
+latency benchmark. Production video options were not reduced.
+
+| Check | Actual result |
+| --- | --- |
+| `multiDevice true` | PASS: shared persistent identity, two connected ADBs, two live windows, target-isolated touch, duplicate/failed connection isolation, latest shortcut independent of tool selection, latest-disconnect fallback, one fullscreen instance, same-session background decode/restore and automatic window, live per-window close with ADB retained, per-device disconnect, keep-alive opt-out, disconnect-all exits fullscreen |
+| `windowUi true` | PASS: identity, Shell, SHA-256 file roundtrip, scan, video/non-silent audio, two-pointer input, bidirectional text clipboard, single rotation, volume down/up/repeat and release, floating touch and same-session fullscreen/window handoff, close retains ADB |
+| `microphoneOnly true` | PASS: deterministic PCM over the bound device's ADB, cross-UID MIC/VOICE_COMMUNICATION recording, route restoration, stalled-source stop and concurrent video. Live controller recording permission/capture was not retested |
+| `uiStage rotation` | FAIL: native controller orientation follows, but video aspect sometimes does not update during the four-way sequence within the test bound |
+| Unmodified 0.4.1 APK + HEAD baseline test comparison | FAIL at floating video rotation; fullscreen four-way checks reached the floating stage. Failure stages differ, so this does not establish a common root cause or exclude a 0.5.0 regression |
+
+All rows marked PASS returned `INSTRUMENTATION_RESULT: result=PASS ...` and final
+`INSTRUMENTATION_CODE: -1`. The focused four-way stage is explicitly not counted
+as PASS, and its video reconfiguration issue remains unresolved. The earlier
+single-rotation assertion timed out on the loaded emulator; the final tests allow
+45 seconds for real media reconfiguration while retaining actual dimensions,
+frames, native rotation and session identity checks. Clipboard direction changes
+wait for the get/autosync deliveries to settle and for foreground window focus.
+
+A raw controller screenshot of two simultaneous windows was inspected: both
+videos, bars, rounded corners, icons and separate titles are present. Capture is
+independent of the functional multi-device instrumentation; Home transitions use
+the real system launcher Intent. Initial setup/fixture failures and incomplete
+runs are not counted as successful validation.
+
+Physical Android 16-to-15, mixed USB/TCP/TLS concurrency, OEM battery/overlay
+policies, prolonged screen-off/Doze, hardware decoder capacity and subjective
+multi-source audio quality require separate device validation. Foreground service
+and wake lock do not promise survival of force-stop, process kill or network loss;
+there is no automatic reconnect. Background/window microphone capture remains off.
 
 ## 0.4.1 focused floating-window refinement
 

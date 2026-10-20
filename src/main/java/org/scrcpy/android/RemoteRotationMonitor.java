@@ -8,13 +8,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** Finite, cancellable reads of DisplayManager's shell interface. Fullscreen only. */
 final class RemoteRotationMonitor implements AutoCloseable {
     interface Listener { void rotation(RemoteOrientation.Info info); }
-    private final RuntimeState state;
+    private final DeviceConnection state;
+    private final int displayId;
     private final Listener listener;
     private final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
     private final AtomicBoolean closed = new AtomicBoolean(), refreshPending = new AtomicBoolean();
     private volatile AdbStream current;
     private boolean unavailableLogged;
-    RemoteRotationMonitor(RuntimeState state, Listener listener) { this.state = state; this.listener = listener; }
+    RemoteRotationMonitor(DeviceConnection state, int displayId, Listener listener) { this.state = state; this.displayId = displayId; this.listener = listener; }
     void start() { worker.scheduleWithFixedDelay(this::poll, 0, 1200, TimeUnit.MILLISECONDS); }
     void refresh() {
         if (closed.get() || !refreshPending.compareAndSet(false, true)) return;
@@ -34,7 +35,7 @@ final class RemoteRotationMonitor implements AutoCloseable {
                     if (output.size() + n > 256 * 1024) throw new IOException("Display response too large");
                     output.write(buffer, 0, n);
                 }
-                info = RemoteOrientation.parse(output.toString("UTF-8"));
+                info = RemoteOrientation.parse(output.toString("UTF-8"), displayId);
             } finally { timeout.cancel(false); }
         } catch (Exception error) {
             if (!closed.get() && !unavailableLogged) DebugLog.write("remote rotation query unavailable: " + error.getMessage());

@@ -16,16 +16,17 @@ final class RemoteDisplay extends FrameLayout implements SurfaceHolder.Callback,
         void ended(String reason);
     }
     final SurfaceView video;
-    private final RuntimeState runtime;
+    private final DeviceConnection runtime;
     private final boolean audio;
     private final Events events;
     private final SparseArray<float[]> touches = new SparseArray<>();
-    private ScrcpySession session;
+    private volatile ScrcpySession session;
     private int videoWidth, videoHeight;
-    private boolean disposed;
-    private int surfaceGeneration;
+    private volatile boolean disposed;
+    private volatile boolean suspended;
+    private volatile int surfaceGeneration;
 
-    RemoteDisplay(Context context, RuntimeState runtime, boolean audio, Events events) {
+    RemoteDisplay(Context context, DeviceConnection runtime, boolean audio, Events events) {
         super(context); this.runtime = runtime; this.audio = audio; this.events = events; setBackgroundColor(Color.BLACK);
         video = new SurfaceView(context); video.setContentDescription("远程设备画面，可触控");
         addView(video, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
@@ -33,26 +34,47 @@ final class RemoteDisplay extends FrameLayout implements SurfaceHolder.Callback,
         addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob) -> resize());
     }
     @Override public void surfaceCreated(SurfaceHolder holder) {
-        int generation = ++surfaceGeneration;
-        runtime.worker.execute(() -> {
+        if (suspended || disposed) return;
+        attach(holder);
+    }
+    private void attach(SurfaceHolder holder) {
+        int generation = ++surfaceGeneration, mirrorGeneration = runtime.mirrorGeneration;
+        try { runtime.worker.execute(() -> {
             try {
-                if (disposed || generation != surfaceGeneration) return;
-                ScrcpySession current = runtime.session;
-                if (current == null || current.isClosed()) {
-                    if (!runtime.adb.isConnected()) throw new java.io.IOException("ADB 未连接");
-                    current = new ScrcpySession(getContext(), runtime.adb, holder.getSurface(), audio, this);
-                    runtime.session = current; session = current; current.start();
-                } else { current.attachOutput(holder.getSurface(), this); session = current; size(current.width, current.height); }
+                ScrcpySession current; boolean created;
+                synchronized (runtime) {
+                    if (disposed || suspended || generation != surfaceGeneration || mirrorGeneration != runtime.mirrorGeneration || !runtime.connected) return;
+                    current = runtime.session; created = current == null || current.isClosed();
+                    if (created) {
+                        current = new ScrcpySession(getContext(), runtime, holder.getSurface(), audio, this);
+                        runtime.session = current;
+                    }
+                    session = current;
+                }
+                if (created) current.start();
+                else { current.attachOutput(holder.getSurface(), this); size(current.width, current.height); }
                 ScrcpySession attached = current;
                 post(() -> {
-                    if (disposed || generation != surfaceGeneration) { stopIfOwner(); return; }
-                    events.ready(attached);
+                    if (disposed || generation != surfaceGeneration || mirrorGeneration != runtime.mirrorGeneration) { if (!suspended || disposed) stopIfOwner(); return; }
+                    if (!suspended) events.ready(attached);
                 });
-            } catch (Exception e) { DebugLog.error("attach remote view", e); post(() -> events.ended(e.getMessage())); }
-        });
+            } catch (Exception e) { DebugLog.error("attach remote view", e); post(() -> { if (!disposed && mirrorGeneration == runtime.mirrorGeneration) events.ended(e.getMessage()); }); }
+        }); } catch (java.util.concurrent.RejectedExecutionException ignored) { events.ended("ADB 已断开"); }
     }
     @Override public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) { }
-    @Override public void surfaceDestroyed(SurfaceHolder holder) { ++surfaceGeneration; stopIfOwner(); }
+    @Override public void surfaceDestroyed(SurfaceHolder holder) { ++surfaceGeneration; if (!suspended) stopIfOwner(); }
+    void suspendOutput() {
+        releaseTouches(); suspended = true;
+        try { runtime.worker.execute(() -> {
+            try { runtime.park(session, this); }
+            catch (Exception error) { DebugLog.error("park remote", error); post(() -> events.ended("后台保活失败：" + error.getMessage())); stopIfOwner(); }
+        }); } catch (java.util.concurrent.RejectedExecutionException ignored) { }
+    }
+    void resumeOutput() {
+        if (disposed || !suspended) return; suspended = false;
+        if (video.getHolder().getSurface().isValid()) attach(video.getHolder());
+    }
+
     boolean ownsSession() { return session != null && session.isOwnedBy(this); }
     void dispose() { disposed = true; stopIfOwner(); }
     void releaseTouches() {
@@ -63,7 +85,7 @@ final class RemoteDisplay extends FrameLayout implements SurfaceHolder.Callback,
     }
     private void stopIfOwner() {
         releaseTouches();
-        if (ownsSession()) { session.close(); if (runtime.session == session) runtime.session = null; }
+        runtime.closeOwned(session, this);
     }
     private void resize() {
         if (videoWidth <= 0 || videoHeight <= 0 || getWidth() == 0 || getHeight() == 0) return;

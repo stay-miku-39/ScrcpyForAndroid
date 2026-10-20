@@ -1,7 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <application android:debuggable="true">
-        <activity android:name="org.scrcpy.android.TargetProbeActivity" android:exported="true" />
+        <activity android:name="org.scrcpy.android.TargetProbeActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
         <activity android:name="org.scrcpy.android.MicrophoneProbeActivity" android:exported="true" />
     </application>
 </manifest>

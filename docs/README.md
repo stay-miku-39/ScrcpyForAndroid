@@ -5,7 +5,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [开发接手文档](development-handoff.md) | 全部开发阶段总结、架构/源码索引、数据和协议约束、构建测试、踩坑与已知问题 |
-| [需求与回归设计](requirements-and-regression.md) | 当前 0.4.1 行为、需求编号、验收矩阵和实体机补充清单 |
+| [需求与回归设计](requirements-and-regression.md) | 当前 0.6.0-dev 行为、需求编号、验收矩阵和实体机补充清单 |
 | [测试记录](../TESTING.md) | 各版本实际测试结果、跳过项及证据边界 |
 | [输入共享调查](../INPUT_SHARING.md) | Android 14+ 麦克风方案、摄像头限制、权限和验证 |
 | [UI 组件与资源](ui-assets.md) | Material Components、小窗矢量图标来源和许可 |

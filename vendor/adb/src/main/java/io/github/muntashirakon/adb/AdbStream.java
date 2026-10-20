@@ -10,6 +10,7 @@ import java.nio.ByteBuffer;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.TimeUnit;
 
 /**
  * This class abstracts the underlying ADB streams
@@ -310,6 +311,22 @@ public class AdbStream implements Closeable {
             offset = offset + chunk;
             length = length - chunk;
         }
+    }
+
+    /**
+     * Waits for WRTE credit without reserving it or sending data. A sole writer can use this to
+     * select fresh work after a delayed OKAY instead of holding stale work inside write().
+     * Does not bound a subsequent socket/USB write, nor completion of a multi-chunk payload.
+     */
+    public synchronized boolean awaitWriteReady(long timeout, TimeUnit unit) throws IOException, InterruptedException {
+        long remaining = unit.toNanos(timeout), deadline = System.nanoTime() + remaining;
+        while (!mIsClosed && !mWriteReady.get()) {
+            if (remaining <= 0) return false;
+            TimeUnit.NANOSECONDS.timedWait(this, remaining);
+            remaining = deadline - System.nanoTime();
+        }
+        if (mIsClosed) throw new IOException("Stream closed");
+        return true;
     }
 
     public void flush() throws IOException {

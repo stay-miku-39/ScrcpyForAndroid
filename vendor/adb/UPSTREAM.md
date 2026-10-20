@@ -20,3 +20,11 @@ As of 0.4.0, concurrent opens allocate atomic local IDs; an establishing OKAY
 followed immediately by CLSE is accepted as an empty completed stream instead
 of a rejected service. CLSE without OKAY still rejects the open. Loopback tests
 exercise concurrent short commands, real rejection and the existing stream paths.
+
+As of 0.5.1, `AdbStream.awaitWriteReady(timeout, unit)` lets a stream's sole writer
+wait for WRTE credit without consuming it or choosing a payload in advance. The
+controller uses this to expire queued operations after a delayed OKAY. Existing
+write/chunking/USB behavior is retained. Loopback tests cover no-credit timeout,
+non-consuming readiness, delayed OKAY, peer close and interruption. Readiness is
+not a deadline for the underlying socket/USB write or a multi-chunk payload that
+has already started; abandoning a partially written scrcpy message is unsafe.

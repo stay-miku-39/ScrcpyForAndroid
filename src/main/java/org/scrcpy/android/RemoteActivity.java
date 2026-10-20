@@ -13,6 +13,9 @@ import java.util.*;
 
 public class RemoteActivity extends androidx.activity.ComponentActivity implements RemoteDisplay.Events {
     private RuntimeState runtime;
+    DeviceConnection device;
+    private boolean userLeaving;
+    private int outputGeneration;
     ScrcpySession session;
     SurfaceView video;
     RemoteDisplay display;
@@ -38,10 +41,35 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
     private final ClipboardManager.OnPrimaryClipChangedListener clipListener = () -> sendClipboard(false);
     private final SharedPreferences.OnSharedPreferenceChangeListener appearanceListener = (prefs, key) -> runOnUiThread(this::applyAppearance);
 
+    static Intent intent(Context context, String target, boolean audio) {
+        return new Intent(context, RemoteActivity.class).putExtra("target", target).putExtra("audio", audio)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+    }
+    private DeviceConnection requestedDevice(Intent intent) {
+        String target = intent.getStringExtra("target"); return target == null ? runtime.latest() : runtime.connection(target);
+    }
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        DeviceConnection next = requestedDevice(intent);
+        if (next == null || !next.connected) { status("该 ADB 已断开"); return; }
+        setIntent(intent);
+        if (next == device) { display.resumeOutput(); return; }
+        ++outputGeneration;
+        dismissMenu(); stopMicrophone(); stopRotationMonitor(); powerKeys.release(); releaseKeys();
+        display.dispose(); root.removeView(display);
+        device = next; session = null; lastClipboard = ""; rotationInfo = null; lastRotationUpdate = -1; switchingWindow = false;
+        display = new RemoteDisplay(this, device, intent.getBooleanExtra("audio", true), this); video = display.video;
+        root.addView(display, 0, new FrameLayout.LayoutParams(-1, -1));
+        status("正在连接：" + device.target);
+    }
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         try { runtime = RuntimeState.get(this); } catch (Exception e) { finish(); return; }
+        device = requestedDevice(getIntent());
+        if (device == null || !device.connected) { finish(); return; }
+        runtime.fullscreen = this;
+        try { FloatingWindowService.keep(this); } catch (RuntimeException e) { statusServiceFailure(e); finish(); return; }
         android.content.SharedPreferences prefs = getSharedPreferences("remote-ui", MODE_PRIVATE);
         syncClipboard = prefs.getBoolean("clipboard", true); syncVolume = prefs.getBoolean("volumeKeys", true);
         autoRotate = prefs.getBoolean("autoRotate", true);
@@ -50,7 +78,7 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         root = new FrameLayout(this); root.setBackgroundColor(Color.BLACK); setContentView(root);
         getWindow().getInsetsController().hide(WindowInsets.Type.systemBars());
         getWindow().getInsetsController().setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-        display = new RemoteDisplay(this, runtime, getIntent().getBooleanExtra("audio", true), this); video = display.video;
+        display = new RemoteDisplay(this, device, getIntent().getBooleanExtra("audio", true), this); video = display.video;
         powerKeys = new RemoteKeyActions(() -> display.ownsSession() ? session : null);
         root.addView(display, new FrameLayout.LayoutParams(-1, -1));
         status = new TextView(this); status.setTextColor(Color.WHITE); status.setTextSize(14); status.setText("正在连接…");
@@ -183,7 +211,7 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
     }
     private void releaseKeys() { if (session != null) for (int code : heldKeys) session.send(ControlProtocol.key(KeyEvent.ACTION_UP, code)); heldKeys.clear(); }
     void requestFloatingWindow() {
-        if (switchingWindow || session == null || !display.ownsSession()) return;
+        if (switchingWindow || session == null || session.isClosed() || device.session != session) return;
         dismissMenu(); powerKeys.release(); releaseKeys(); display.releaseTouches(); stopMicrophone(); stopRotationMonitor();
         if (!Settings.canDrawOverlays(this)) {
             awaitingPermission = true;
@@ -191,21 +219,24 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
             startActivityForResult(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:" + getPackageName())), 20); return;
         }
         android.content.SharedPreferences permissions = getSharedPreferences("remote-ui", MODE_PRIVATE);
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (resumed && !userLeaving && Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
                 && !permissions.getBoolean("notificationsRequested", false)) {
             permissions.edit().putBoolean("notificationsRequested", true).apply(); awaitingNotifications = true;
             requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 21); return;
         }
         switchingWindow = true;
-        Intent intent = new Intent(this, FloatingWindowService.class).putExtra("audio", getIntent().getBooleanExtra("audio", true));
+        int generation = ++outputGeneration;
+        display.suspendOutput();
+        Intent intent = new Intent(this, FloatingWindowService.class).putExtra("target", device.target).putExtra("audio", getIntent().getBooleanExtra("audio", true));
         intent.putExtra("result", new ResultReceiver(new Handler(getMainLooper())) {
             @Override protected void onReceiveResult(int result, Bundle data) {
+                if (generation != outputGeneration || isDestroyed()) return;
                 switchingWindow = false;
-                if (result == RESULT_OK) finish(); else { status(data == null ? "小窗启动失败" : data.getString("error")); updateRotationMonitor(); }
+                if (result == RESULT_OK) { finish(); } else { display.resumeOutput(); status(data == null ? "小窗启动失败" : data.getString("error")); updateRotationMonitor(); }
             }
         });
         try { startForegroundService(intent); }
-        catch (RuntimeException e) { switchingWindow = false; status("小窗启动失败：" + e.getMessage()); updateRotationMonitor(); }
+        catch (RuntimeException e) { switchingWindow = false; display.resumeOutput(); status("小窗启动失败：" + e.getMessage()); updateRotationMonitor(); }
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
@@ -228,8 +259,8 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
     }
     @Override public void ready(ScrcpySession attached) {
         session = attached;
-        if (attached.width > 0) { status("已连接：" + runtime.target); if (syncClipboard) attached.getClipboard(); }
-        if (FloatingWindowService.isShowing()) stopService(new Intent(this, FloatingWindowService.class));
+        if (attached.width > 0) { status("已连接：" + device.target); if (resumed && syncClipboard) attached.getClipboard(); }
+        FloatingWindowService.removeTransferred(device.target);
         updateRotationMonitor();
         if (pendingFloating) { pendingFloating = false; requestFloatingWindow(); }
     }
@@ -239,17 +270,18 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         if (message.startsWith("已连接")) status.postDelayed(() -> { if (microphone == null) status.setVisibility(View.GONE); }, 1800);
     }
     private void toggleMicrophone() {
-        if (microphone != null) { stopMicrophone(); status("已连接：" + runtime.target + "（麦克风已停止）"); return; }
+        if (microphone != null) { stopMicrophone(); status("已连接：" + device.target + "（麦克风已停止）"); return; }
         if (selectingMicrophoneTarget || session == null || !display.ownsSession()) return;
         selectingMicrophoneTarget = true;
+        DeviceConnection queriedDevice = device;
         new Thread(() -> {
             String target = "";
-            try { target = MicrophoneForwarder.foregroundPackage(runtime.shell("dumpsys activity activities")); }
+            try { target = MicrophoneForwarder.foregroundPackage(queriedDevice.shell("dumpsys activity activities")); }
             catch (Exception e) { DebugLog.write("microphone foreground query: " + e.getMessage()); }
             String current = target;
             runOnUiThread(() -> {
                 selectingMicrophoneTarget = false;
-                if (!resumed || isFinishing() || session == null || session.isClosed() || !display.ownsSession()) return;
+                if (device != queriedDevice || !resumed || isFinishing() || session == null || session.isClosed() || !display.ownsSession()) return;
                 LinearLayout body = new LinearLayout(this); body.setOrientation(LinearLayout.VERTICAL); body.setPadding(dp(24), 0, dp(24), 0);
                 TextView explanation = new TextView(this); explanation.setText("实验功能，需要被控端 Android 14 及以上。向指定应用提供主控麦克风；建议先开启，再开始录音或网络通话。离开全屏或切换小窗会停止。\n\n被控应用包名（已填入当前前台应用）："); body.addView(explanation);
                 EditText app = new EditText(this); app.setSingleLine(true); app.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); app.setText(current); app.setHint("例如 com.example.app"); body.addView(app);
@@ -270,12 +302,12 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         if (!resumed || awaitingMicrophonePermission || pendingMicrophoneTarget == null) return;
         String target = pendingMicrophoneTarget; pendingMicrophoneTarget = null;
         if (isFinishing() || session == null || session.isClosed() || !display.ownsSession()) return;
-        MicrophoneForwarder forwarding = new MicrophoneForwarder(this, runtime, target, new MicrophoneForwarder.Listener() {
-            public void started(MicrophoneForwarder current) { runOnUiThread(() -> { if (microphone == current && current.isActive()) status("已连接：" + runtime.target); }); }
+        MicrophoneForwarder forwarding = new MicrophoneForwarder(this, device, target, new MicrophoneForwarder.Listener() {
+            public void started(MicrophoneForwarder current) { runOnUiThread(() -> { if (microphone == current && current.isActive()) status("已连接：" + device.target); }); }
             public void stopped(MicrophoneForwarder current, String error) { runOnUiThread(() -> {
                 if (microphone != current) return;
                 microphone = null;
-                if (resumed && !isFinishing()) status(error == null ? "已连接：" + runtime.target : "麦克风转发失败：" + error);
+                if (resumed && !isFinishing()) status(error == null ? "已连接：" + device.target : "麦克风转发失败：" + error);
             }); }
         });
         microphone = forwarding; status("正在开启麦克风转发…"); forwarding.start();
@@ -305,9 +337,10 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
     boolean autoRotateEnabled() { return autoRotate; }
     private void updateRotationMonitor() {
         if (!autoRotate || !resumed || pendingFloating || switchingWindow || isFinishing() || session == null || session.isClosed() || !display.ownsSession()) return;
+        if (session.remoteDisplayId < 0) return;
         if (rotationMonitor != null) return;
         int generation = ++monitorGeneration;
-        RemoteRotationMonitor monitor = new RemoteRotationMonitor(runtime, info -> runOnUiThread(() -> {
+        RemoteRotationMonitor monitor = new RemoteRotationMonitor(device, session.remoteDisplayId, info -> runOnUiThread(() -> {
             if (generation != monitorGeneration || rotationMonitor == null || !autoRotate || !resumed || !display.ownsSession() || isFinishing()) return;
             if (info != null) { rotationInfo = info; lastRotationUpdate = SystemClock.elapsedRealtime(); applyOrientation(info.requestedOrientation(), "display service rotation=" + info.rotation); }
             else if (rotationInfo == null && session != null) applyOrientation(RemoteOrientation.aspectOrientation(session.width, session.height), "video aspect");
@@ -346,13 +379,40 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
     }
     @Override public void ended(String reason) { if (!isFinishing()) new AlertDialog.Builder(this).setMessage(reason).setPositiveButton("返回", (d,w) -> finish()).show(); }
     @Override protected void onResume() {
-        super.onResume(); resumed = true;
+        super.onResume(); resumed = true; userLeaving = false;
+        if (display != null && !switchingWindow) display.resumeOutput();
         autoRotate = getSharedPreferences("remote-ui", MODE_PRIVATE).getBoolean("autoRotate", true); updateRotationMonitor();
         resumePendingMicrophone();
         if (clipboard != null) clipboard.addPrimaryClipChangedListener(clipListener);
         if (runtime != null && getIntent().getBooleanExtra("audio", true)) runtime.acquireAudioFocus(this);
     }
-    @Override protected void onPause() { resumed = false; stopRotationMonitor(); if (powerKeys != null) powerKeys.release(); if (!awaitingMicrophonePermission) stopMicrophone(); releaseKeys(); if (display != null) display.releaseTouches(); if (clipboard != null) clipboard.removePrimaryClipChangedListener(clipListener); super.onPause(); }
-    @Override protected void onStop() { if (!awaitingPermission && !awaitingNotifications && !awaitingMicrophonePermission) { if (display != null) display.dispose(); if (!isFinishing()) finish(); } super.onStop(); }
-    @Override protected void onDestroy() { UiPreferences.get(this).unregisterOnSharedPreferenceChangeListener(appearanceListener); stopRotationMonitor(); stopMicrophone(); dismissMenu(); releaseKeys(); if (display != null) display.dispose(); if (runtime != null) runtime.releaseAudioFocusIfIdle(this); super.onDestroy(); }
+    private void statusServiceFailure(RuntimeException error) { DebugLog.error("foreground service", error); Toast.makeText(this, "后台服务启动失败：" + error.getMessage(), Toast.LENGTH_LONG).show(); }
+    @Override protected void onUserLeaveHint() { userLeaving = true; super.onUserLeaveHint(); }
+    @Override protected void onPause() {
+        resumed = false; stopRotationMonitor(); if (powerKeys != null) powerKeys.release();
+        if (!awaitingMicrophonePermission) stopMicrophone(); releaseKeys();
+        if (display != null) display.releaseTouches();
+        if (clipboard != null) clipboard.removePrimaryClipChangedListener(clipListener);
+        boolean waiting = awaitingPermission || awaitingNotifications || awaitingMicrophonePermission;
+        if (display != null && !isFinishing() && !switchingWindow && (waiting || UiPreferences.get(this).getBoolean("backgroundKeepAlive", true))) {
+            display.suspendOutput();
+            if (!waiting && userLeaving && UiPreferences.get(this).getBoolean("backgroundFloating", false) && Settings.canDrawOverlays(this)) requestFloatingWindow();
+        }
+        super.onPause();
+    }
+    @Override protected void onStop() {
+        if (!awaitingPermission && !awaitingNotifications && !awaitingMicrophonePermission && !switchingWindow
+                && !UiPreferences.get(this).getBoolean("backgroundKeepAlive", true)) {
+            if (display != null) display.dispose(); if (!isFinishing()) finish();
+        }
+        super.onStop();
+    }
+    @Override protected void onDestroy() {
+        UiPreferences.get(this).unregisterOnSharedPreferenceChangeListener(appearanceListener);
+        stopRotationMonitor(); stopMicrophone(); dismissMenu(); releaseKeys();
+        if (powerKeys != null) powerKeys.release();
+        if (display != null) display.dispose();
+        if (runtime != null) { if (runtime.fullscreen == this) runtime.fullscreen = null; runtime.releaseAudioFocusIfIdle(this); }
+        super.onDestroy();
+    }
 }

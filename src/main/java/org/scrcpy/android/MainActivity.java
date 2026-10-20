@@ -24,6 +24,7 @@ public class MainActivity extends androidx.activity.ComponentActivity {
     private boolean busy;
     MainUi ui;
     private boolean awaitingOverlay;
+    private String overlayTarget, pendingDeviceTarget;
     private PortScanner scanner;
     private String pendingPath;
     private SharedPreferences preferences;
@@ -42,12 +43,13 @@ public class MainActivity extends androidx.activity.ComponentActivity {
                         : intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
                 if (device != null && intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) connectUsb(device);
                 else show("USB 权限未授予");
-            } else if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(intent.getAction()) && runtime != null && runtime.target.startsWith("USB:")) {
+            } else if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(intent.getAction()) && runtime != null) {
                 UsbDevice detached = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
-                if (detached == null || !runtime.target.equals("USB:" + detached.getDeviceName())) return;
-                // The transport will close itself; release the active mirror as well.
-                if (runtime.session != null) runtime.session.close();
-                runtime.worker.execute(() -> { try { runtime.adb.disconnect(); } catch (Exception e) { DebugLog.error("USB detach", e); } });
+                if (detached == null) return;
+                DeviceConnection device = runtime.connection("USB:" + detached.getDeviceName());
+                if (device == null) return;
+                FloatingWindowService.closeRemote(MainActivity.this, device.target);
+                runtime.worker.execute(() -> { try { runtime.disconnect(device); } catch (Exception e) { DebugLog.error("USB detach", e); } });
                 show("USB 设备已断开");
             }
         }
@@ -62,7 +64,7 @@ public class MainActivity extends androidx.activity.ComponentActivity {
         getOnBackPressedDispatcher().addCallback(this, new androidx.activity.OnBackPressedCallback(true) {
             @Override public void handleOnBackPressed() { if (!ui.back()) finish(); }
         });
-        if (saved != null) { pendingPath = saved.getString("pendingPath"); awaitingOverlay = saved.getBoolean("awaitingOverlay"); }
+        if (saved != null) { pendingPath = saved.getString("pendingPath"); awaitingOverlay = saved.getBoolean("awaitingOverlay"); overlayTarget = saved.getString("overlayTarget"); pendingDeviceTarget = saved.getString("pendingDeviceTarget"); }
         IntentFilter filter = new IntentFilter(USB_PERMISSION); filter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
         ContextCompat.registerReceiver(this, usbReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
     }
@@ -83,17 +85,25 @@ public class MainActivity extends androidx.activity.ComponentActivity {
         if (n < 1 || n > 65535) throw new IllegalArgumentException("端口必须为 1–65535"); return n;
     }
     private String host() { String value = host.getText().toString().trim(); if (value.isEmpty()) throw new IllegalArgumentException("请输入目标 IP"); return value; }
-    void requireConnected() throws IOException { if (!runtime.adb.isConnected()) throw new IOException("请先连接 ADB"); }
+    void requireConnected() throws IOException { requireConnected(runtime.current()); }
+    static void requireConnected(DeviceConnection device) throws IOException { if (device == null || !device.connected) throw new IOException("请先连接 ADB"); }
+    private void keepConnections() {
+        FloatingWindowService.keep(this);
+        SharedPreferences permissions = UiPreferences.get(this);
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                && !permissions.getBoolean("notificationsRequested", false)) {
+            permissions.edit().putBoolean("notificationsRequested", true).apply();
+            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 21);
+        }
+    }
     void connectNetwork() {
         try {
             String address = host(); int number = port(port);
+            keepConnections();
             task(() -> {
-                stopService(new Intent(this, FloatingWindowService.class));
-                if (runtime.session != null) runtime.session.close(); runtime.adb.disconnect();
                 DebugLog.write("adb connect host=" + address + " port=" + number);
-                if (!runtime.adb.connect(address, number)) { runtime.adb.disconnect(); throw new IOException("连接超时，请检查端口、配对状态或被控端授权弹窗"); }
-                runtime.target = address + ":" + number; remember(address, number, false);
-                return "ADB 已连接：" + runtime.target + "\n" + runtime.shell("getprop ro.product.model; getprop ro.build.version.release");
+                DeviceConnection device = runtime.connect(address, number); remember(address, number, false);
+                return "ADB 已连接：" + device.target + "\n" + device.shell("getprop ro.product.model; getprop ro.build.version.release");
             });
         } catch (Exception e) { show(e.getMessage()); }
     }
@@ -137,13 +147,20 @@ public class MainActivity extends androidx.activity.ComponentActivity {
             else usb.requestPermission(device, PendingIntent.getBroadcast(this, 0, new Intent(USB_PERMISSION).setPackage(getPackageName()), PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
         }).show();
     }
-    private void connectUsb(UsbDevice device) { task(() -> {
-        stopService(new Intent(this, FloatingWindowService.class));
-        if (runtime.session != null) runtime.session.close(); runtime.adb.disconnect();
-        DebugLog.write("adb USB connect vid=" + device.getVendorId() + " pid=" + device.getProductId());
-        if (!runtime.adb.connectUsb(this, device)) { runtime.adb.disconnect(); throw new IOException("USB 连接超时，请在被控端允许 USB 调试"); }
-        runtime.target = "USB:" + device.getDeviceName(); return "USB ADB 已连接\n" + runtime.shell("getprop ro.product.model; ip -f inet addr show wlan0");
-    }); }
+    private void connectUsb(UsbDevice usbDevice) {
+        keepConnections();
+        task(() -> {
+            String target = "USB:" + usbDevice.getDeviceName(); DeviceConnection device = runtime.connection(target);
+            if (device == null || !device.adb.isConnected()) {
+                AdbManager manager = new AdbManager(new Identity(this));
+                try {
+                    if (!manager.connectUsb(this, usbDevice)) throw new IOException("USB 连接超时，请在被控端允许 USB 调试");
+                    device = runtime.register(target, manager);
+                } catch (Exception e) { manager.disconnect(); throw e; }
+            } else runtime.select(device);
+            return "USB ADB 已连接：" + target + "\n" + device.shell("getprop ro.product.model; ip -f inet addr show wlan0");
+        });
+    }
     void scan() {
         try {
             if (scanner != null) scanner.close();
@@ -168,7 +185,7 @@ public class MainActivity extends androidx.activity.ComponentActivity {
         super.onActivityResult(request, result, data);
         if (request == 20) {
             awaitingOverlay = false;
-            if (android.provider.Settings.canDrawOverlays(this)) startRemote(true);
+            if (android.provider.Settings.canDrawOverlays(this)) startRemote(overlayTarget, true);
             else show("未授予悬浮窗权限，仍可使用全屏控制");
             return;
         }
@@ -176,12 +193,12 @@ public class MainActivity extends androidx.activity.ComponentActivity {
         Uri uri = data.getData(); String path = pendingPath;
         if (request == 10) task(() -> {
             requireConnected(); try (InputStream in = getContentResolver().openInputStream(uri)) {
-                long count = AdbSync.push(runtime.adb, in, path); return "上传完成：" + count + " 字节";
+                long count = AdbSync.push(fileDevice().adb, in, path); return "上传完成：" + count + " 字节";
             }
         });
         else if (request == 11) task(() -> {
             requireConnected(); try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) {
-                long count = AdbSync.pull(runtime.adb, path, out); return "下载完成：" + count + " 字节";
+                long count = AdbSync.pull(fileDevice().adb, path, out); return "下载完成：" + count + " 字节";
             }
         });
     }
@@ -191,22 +208,25 @@ public class MainActivity extends androidx.activity.ComponentActivity {
     }
     @Override protected void onPause() { if (status != null) status.removeCallbacks(operationWatcher); super.onPause(); }
     boolean isBusy() { return busy || runtime.operationRunning; }
-    void disconnect() { task(() -> {
-        stopService(new Intent(this, FloatingWindowService.class));
-        if (runtime.session != null) runtime.session.close();
-        runtime.adb.disconnect(); runtime.target = ""; return "已断开 ADB";
-    }); }
+    void disconnect() { disconnect(runtime.current()); }
+    void disconnect(DeviceConnection device) {
+        if (device == null) return;
+        FloatingWindowService.closeRemote(this, device.target);
+        task(() -> { runtime.disconnect(device); return "已断开 ADB：" + device.target; });
+    }
     void cancelOperation() {
         if (scanner != null) scanner.close();
-        stopService(new Intent(this, FloatingWindowService.class));
+        runtime.cancelPendingConnect();
+        DeviceConnection device = runtime.current(); if (device == null) { show("正在取消连接…"); return; }
+        FloatingWindowService.closeRemote(this, device.target);
         new Thread(() -> {
-            try { if (runtime.session != null) runtime.session.close(); runtime.adb.disconnect(); runtime.target = ""; show("连接已断开"); }
+            try { runtime.disconnect(device); show("连接已断开：" + device.target); }
             catch (Exception e) { DebugLog.error("cancel", e); }
         }, "adb-cancel").start();
     }
-    void tcpip() { task(() -> {
-        requireConnected();
-        try (AdbStream stream = runtime.adb.openStream("tcpip:5555")) {
+    void tcpip() { DeviceConnection device = runtime.current(); task(() -> {
+        requireConnected(device);
+        try (AdbStream stream = device.adb.openStream("tcpip:5555")) {
             byte[] b = new byte[1024]; int n = stream.openInputStream().read(b);
             return "已请求开启 TCP 5555；请填写被控端 Wi-Fi IP 后重连。" + (n > 0 ? "\n" + new String(b, 0, n, "UTF-8") : "");
         }
@@ -217,7 +237,8 @@ public class MainActivity extends androidx.activity.ComponentActivity {
     }
     void chooseFile(boolean upload) {
         try {
-            requireConnected(); pendingPath = remotePath.getText().toString();
+            DeviceConnection device = runtime.current(); requireConnected(device);
+            pendingDeviceTarget = device.target; pendingPath = remotePath.getText().toString();
             if (upload) startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*").addCategory(Intent.CATEGORY_OPENABLE), 10);
             else {
                 String name = pendingPath.substring(pendingPath.lastIndexOf('/') + 1);
@@ -227,22 +248,31 @@ public class MainActivity extends androidx.activity.ComponentActivity {
         } catch (Exception e) { show(e.getMessage()); }
     }
     void cancelScan() { if (scanner != null) scanner.close(); }
-    void startRemote(boolean floating) {
+    private DeviceConnection fileDevice() throws IOException {
+        DeviceConnection device = runtime.connection(pendingDeviceTarget);
+        if (device == null || !device.connected) throw new IOException("文件传输目标已断开"); return device;
+    }
+    void startRemote(boolean floating) { DeviceConnection device = runtime.current(); startRemote(device == null ? null : device.target, floating); }
+    void startLatestRemote() { DeviceConnection device = runtime.latest(); startRemote(device == null ? null : device.target, false); }
+    void startRemote(String target, boolean floating) {
         try {
-            requireConnected();
-            if (floating && FloatingWindowService.isShowing()) { show("悬浮小窗已在运行，可从设备页或通知恢复全屏"); return; }
+            DeviceConnection device = runtime.connection(target);
+            if (device == null || !device.connected) throw new IOException("请先连接 ADB");
+            if (floating && FloatingWindowService.isShowing(device.target)) { show("该设备小窗已在运行"); return; }
             if (floating && !android.provider.Settings.canDrawOverlays(this)) {
-                awaitingOverlay = true;
+                awaitingOverlay = true; overlayTarget = device.target;
                 Toast.makeText(this, "请允许在其他应用上层显示，以便使用可触控小窗", Toast.LENGTH_LONG).show();
-                startActivityForResult(new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())), 20);
-                return;
+                startActivityForResult(new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())), 20); return;
             }
             preferences.edit().putBoolean("audio", audio.isChecked()).apply();
-            startActivity(new Intent(this, RemoteActivity.class).putExtra("audio", audio.isChecked()).putExtra("floating", floating));
+            if (floating) {
+                if (runtime.fullscreen != null && runtime.fullscreen.device == device) { runtime.fullscreen.requestFloatingWindow(); return; }
+                startForegroundService(new Intent(this, FloatingWindowService.class).putExtra("target", device.target).putExtra("audio", audio.isChecked()));
+            } else startActivity(RemoteActivity.intent(this, device.target, audio.isChecked()));
         } catch (Exception e) { show(e.getMessage()); }
     }
     @Override protected void onSaveInstanceState(Bundle out) {
-        super.onSaveInstanceState(out); out.putString("pendingPath", pendingPath); out.putBoolean("awaitingOverlay", awaitingOverlay);
+        super.onSaveInstanceState(out); out.putString("pendingPath", pendingPath); out.putBoolean("awaitingOverlay", awaitingOverlay); out.putString("overlayTarget", overlayTarget); out.putString("pendingDeviceTarget", pendingDeviceTarget);
         if (ui != null) ui.save(out);
     }
     @Override protected void onDestroy() { if (scanner != null) scanner.close(); if (runtime != null) try { unregisterReceiver(usbReceiver); } catch (Exception ignored) { } super.onDestroy(); }

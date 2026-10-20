@@ -24,7 +24,7 @@ final class MicrophoneForwarder implements AutoCloseable {
         void close();
     }
     private final Context context;
-    private final RuntimeState runtime;
+    private final DeviceConnection runtime;
     final String targetPackage;
     private final Listener listener;
     private final PcmSource source;
@@ -35,10 +35,10 @@ final class MicrophoneForwarder implements AutoCloseable {
     private volatile String forcedFailure;
     volatile long sentBytes;
     private volatile String inputJar, scrcpyJar;
-    MicrophoneForwarder(Context context, RuntimeState runtime, String targetPackage, Listener listener) {
+    MicrophoneForwarder(Context context, DeviceConnection runtime, String targetPackage, Listener listener) {
         this(context, runtime, targetPackage, listener, new LocalMicrophone(context));
     }
-    MicrophoneForwarder(Context context, RuntimeState runtime, String targetPackage, Listener listener, PcmSource source) {
+    MicrophoneForwarder(Context context, DeviceConnection runtime, String targetPackage, Listener listener, PcmSource source) {
         if (!validPackage(targetPackage)) throw new IllegalArgumentException("请输入有效的被控应用包名");
         this.context = context.getApplicationContext(); this.runtime = runtime; this.targetPackage = targetPackage;
         this.listener = listener; this.source = source;

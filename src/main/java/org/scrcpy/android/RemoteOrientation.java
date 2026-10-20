@@ -18,8 +18,11 @@ final class RemoteOrientation {
         }
     }
     static Info parse(String dump) {
+        return parse(dump, 0);
+    }
+    static Info parse(String dump, int displayId) {
         for (String line : dump.split("\n")) {
-            if (!line.matches("\\s*Display id 0:.*")) continue;
+            if (!line.matches("\\s*Display id " + displayId + ":.*")) continue;
             Matcher size = Pattern.compile("\\breal (\\d+) x (\\d+)").matcher(line);
             Matcher rotation = Pattern.compile("\\brotation ([0-3])\\b").matcher(line);
             if (!size.find() || !rotation.find()) return null;

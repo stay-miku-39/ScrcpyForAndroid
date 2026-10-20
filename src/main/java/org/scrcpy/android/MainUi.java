@@ -64,10 +64,10 @@ final class MainUi {
         FrameLayout pageArea = new FrameLayout(a); root.addView(pageArea, new LinearLayout.LayoutParams(-1, 0, 1));
         content = new ViewFlipper(a); pageArea.addView(content, new FrameLayout.LayoutParams(-1, -1));
         quickRemote = new Button(a); quickRemote.setText("远程控制"); quickRemote.setTextSize(14); quickRemote.setAllCaps(false);
-        quickRemote.setContentDescription("一键启动远程控制"); quickRemote.setTextColor(Color.WHITE);
+        quickRemote.setContentDescription("一键启动最新 ADB 连接的远程控制"); quickRemote.setTextColor(Color.WHITE);
         quickRemote.setMinWidth(0); quickRemote.setPadding(dp(12), 0, dp(12), 0);
         quickRemote.setBackground(background(BLUE, 0, 24, a)); quickRemote.setElevation(dp(6)); quickRemote.setVisibility(View.GONE);
-        quickRemote.setOnClickListener(v -> a.startRemote(false)); a.operations.add(quickRemote);
+        quickRemote.setOnClickListener(v -> a.startLatestRemote()); a.operations.add(quickRemote);
         FrameLayout.LayoutParams shortcutPosition = new FrameLayout.LayoutParams(dp(112), dp(48), Gravity.BOTTOM | Gravity.END);
         shortcutPosition.setMargins(dp(16), dp(16), dp(16), dp(16)); pageArea.addView(quickRemote, shortcutPosition);
         buildConnect(); buildPair(); devicePage = screen("devices", "设备与凭据", null); buildCredential(); buildTools(); buildScan(); buildShell(); buildFiles(); buildSettings();
@@ -121,7 +121,7 @@ final class MainUi {
     }
     private void buildConnect() {
         LinearLayout body = screen("connect", "连接", null), card = card(body);
-        title(card, "连接到设备"); note(card, "使用无线调试地址，或连接 USB / OTG 设备。");
+        title(card, "连接到设备"); note(card, "使用无线调试地址，或连接 USB / OTG 设备。连接新设备会保留其他连接；在设备页分别控制。");
         a.host = field(card, "目标 IP", prefs.getString("host", ""), false);
         a.port = field(card, "连接端口", prefs.getString("port", "5555"), true);
         operation(card, "连接 / 重连", a::connectNetwork, true);
@@ -150,6 +150,19 @@ final class MainUi {
     }
     private void buildSettings() {
         LinearLayout body = screen("settings", "设置", "connect"), card = card(body);
+        card.addView(new StreamSettingsView(a));
+        card = card(body);
+        title(card, "后台运行");
+        SharedPreferences background = UiPreferences.get(a);
+        CheckBox keep = new CheckBox(a); keep.setText("后台保留远程控制连接"); keep.setChecked(background.getBoolean("backgroundKeepAlive", true)); card.addView(keep);
+        CheckBox floating = new CheckBox(a); floating.setText("切换后台时，全屏自动转为小窗"); floating.setChecked(background.getBoolean("backgroundFloating", false)); floating.setEnabled(keep.isChecked()); card.addView(floating);
+        keep.setOnCheckedChangeListener((view, checked) -> { background.edit().putBoolean("backgroundKeepAlive", checked).apply(); floating.setEnabled(checked); });
+        floating.setOnCheckedChangeListener((view, checked) -> {
+            background.edit().putBoolean("backgroundFloating", checked).apply();
+            if (checked && !android.provider.Settings.canDrawOverlays(a)) a.startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:" + a.getPackageName())));
+        });
+        note(card, "后台通过常驻通知保留 ADB 和远控。自动小窗需悬浮窗权限；未授权时保留后台连接。后台和小窗会停止本机麦克风、剪贴板同步及实体音量键转发。系统强制停止或断网仍会结束连接。");
+        card = card(body);
         title(card, "界面透明度");
         note(card, "数值越小越透明。保留最低 20% 不透明度，避免找不到控制按钮。设置自动保存。小窗设置作用于整个窗口，包括远程画面和操作栏。");
         SharedPreferences appearance = UiPreferences.get(a);
@@ -202,7 +215,7 @@ final class MainUi {
     private void buildShell() {
         LinearLayout body = screen("shell", "ADB Shell", "tools"), card = card(body);
         title(card, "执行命令"); a.command = field(card, "Shell 命令", "getprop ro.product.model", false);
-        operation(card, "执行 Shell", () -> { String command = a.command.getText().toString(); a.task(() -> { a.requireConnected(); return a.runtime.shell(command); }); }, true);
+        operation(card, "执行 Shell", () -> { String command = a.command.getText().toString(); DeviceConnection device = a.runtime.current(); a.task(() -> { MainActivity.requireConnected(device); return device.shell(command); }); }, true);
         a.output = text("命令结果显示在这里", 14, INK); a.output.setTextIsSelectable(true); a.output.setPadding(0, dp(16), 0, dp(12)); card.addView(a.output);
     }
     private void buildFiles() {
@@ -238,24 +251,30 @@ final class MainUi {
     void refresh() {
         // connect()/pair() hold the ADB manager lock while waiting for the peer.
         // Never query that lock from navigation while an operation is in flight.
-        boolean connected = connected();
-        connection.setText(connected ? "● 已连接  " + a.runtime.target : "○ 未连接设备");
+        DeviceConnection current = a.runtime.current();
+        boolean connected = connected(current);
+        connection.setText(connected ? "● " + a.runtime.connections().size() + " 个 ADB · 当前 " + current.target : "○ 未连接设备");
         connection.setTextColor(connected ? Color.rgb(24, 124, 88) : MUTED);
         quickRemote.setVisibility(connected ? View.VISIBLE : View.GONE);
         for (View operation : a.operations) operation.setEnabled(!a.isBusy());
         if ("devices".equals(page)) devices();
     }
-    private boolean connected() { return a.isBusy() ? !a.runtime.target.isEmpty() : a.runtime.adb.isConnected(); }
+    private boolean connected(DeviceConnection device) { return device != null && device.connected; }
     private void devices() {
-        devicePage.removeAllViews(); LinearLayout active = card(devicePage); title(active, "当前连接");
-        if (connected()) {
-            note(active, a.runtime.target + (FloatingWindowService.isShowing() ? "\n悬浮小窗运行中" : "\n可开始远程控制"));
-            LinearLayout modes = row(); active.addView(modes);
-            Button full = action(modes, "全屏控制", () -> a.startRemote(false), true); full.setLayoutParams(new LinearLayout.LayoutParams(0, dp(48), 1)); full.setEnabled(!a.isBusy());
-            Button small = action(modes, "悬浮小窗", () -> a.startRemote(true), false); small.setLayoutParams(new LinearLayout.LayoutParams(0, dp(48), 1)); small.setEnabled(!a.isBusy());
-            if (FloatingWindowService.isShowing()) action(active, "关闭小窗", () -> { a.stopService(new Intent(a, FloatingWindowService.class)); a.status.postDelayed(this::refresh, 300); }, false);
-            action(active, "断开 ADB", a::disconnect, false).setEnabled(!a.isBusy());
-        } else note(active, "没有已连接设备。连接后可在这里统一控制或断开。");
+        devicePage.removeAllViews();
+        LinearLayout active = card(devicePage); title(active, "已连接设备（" + a.runtime.connections().size() + "）");
+        if (a.runtime.connections().isEmpty()) note(active, "没有已连接设备。连接后可在这里分别控制或断开。");
+        for (DeviceConnection device : a.runtime.connections()) {
+            LinearLayout item = card(devicePage); title(item, device.target);
+            boolean showing = FloatingWindowService.isShowing(device.target);
+            note(item, (device == a.runtime.current() ? "当前工具目标 · " : "") + (device == a.runtime.latest() ? "最新 ADB 连接 · " : "")
+                    + (showing ? "小窗运行中" : device.hasMirror() ? "远控连接中" : "可开始远程控制"));
+            action(item, "设为当前工具目标", () -> { a.runtime.select(device); refresh(); }, false).setEnabled(!a.isBusy());
+            action(item, "全屏控制", () -> a.startRemote(device.target, false), true).setEnabled(!a.isBusy());
+            action(item, "悬浮小窗", () -> a.startRemote(device.target, true), false).setEnabled(!a.isBusy());
+            if (device.hasMirror()) action(item, "关闭此设备远控", () -> { FloatingWindowService.closeRemote(a, device.target); a.status.postDelayed(this::refresh, 300); }, false);
+            action(item, "断开此设备 ADB", () -> a.disconnect(device), false).setEnabled(!a.isBusy());
+        }
         action(devicePage, "查看本机凭据与指纹", () -> select("credential"), false);
         title(devicePage, "已保存设备");
         try {

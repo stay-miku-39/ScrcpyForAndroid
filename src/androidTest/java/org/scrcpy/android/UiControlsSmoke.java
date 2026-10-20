@@ -58,7 +58,7 @@ final class UiControlsSmoke {
         state.shell("input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard; am start -n org.scrcpy.android.test/org.scrcpy.android.TargetProbeActivity");
     }
     static String run(Instrumentation test, Context context, RuntimeState state, String host, int port, String stage) throws Exception {
-        check(state.adb.connect(host, port), "ADB connect failed"); state.target = host + ":" + port;
+        check(state.connect(host, port) != null, "ADB connect failed");
         prepareTarget(state);
         if ("settings".equals(stage)) return settings(test, context, state);
         SharedPreferences appearance = UiPreferences.get(context);
@@ -101,8 +101,8 @@ final class UiControlsSmoke {
             ScrcpySession original = remote.session;
             test.runOnMainSync(remote::requestFloatingWindow);
             until(() -> FloatingWindowService.isShowing() && remote.isFinishing(), 15, "Floating power test did not attach");
-            FloatingWindowService floating = FloatingWindowService.current();
-            check(state.session == original, "Window handoff restarted session");
+            FloatingWindow floating = FloatingWindowService.current();
+            check(state.current().session == original, "Window handoff restarted session");
             state.shell("input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard");
             Thread.sleep(650); // AWAKE precedes completion of the screen-on transition.
             test.runOnMainSync(() -> floating.powerButton.performClick());
@@ -191,7 +191,7 @@ final class UiControlsSmoke {
             powerItem(test, full, "唤醒屏幕");
             test.runOnMainSync(full::requestFloatingWindow);
             until(() -> FloatingWindowService.isShowing() && full.isFinishing(), 15, "Opacity test window failed");
-            FloatingWindowService floating = FloatingWindowService.current();
+            FloatingWindow floating = FloatingWindowService.current();
             check(Math.abs(floating.windowOpacity() - .65f) < .001f, "Window opacity not loaded");
             main = (MainActivity)test.startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             MainActivity second = main; openSettings(test, second);
@@ -243,8 +243,8 @@ final class UiControlsSmoke {
                 state.shell("wm user-rotation lock " + i);
                 until(() -> remote.getRequestedOrientation() == expected[value] && remote.getDisplay().getRotation() == value,
                         20, "Native UI did not follow remote rotation=" + i + " requested=" + remote.getRequestedOrientation());
-                until(() -> (original.width > original.height) == ((value & 1) == 1), 12, "Video aspect did not follow rotation");
-                check(remote.session == original && state.session == original && !original.isClosed() && !remote.isFinishing(), "Rotation recreated session/activity");
+                until(() -> (original.width > original.height) == ((value & 1) == 1), 45, "Video aspect did not follow rotation");
+                check(remote.session == original && state.current().session == original && !original.isClosed() && !remote.isFinishing(), "Rotation recreated session/activity");
             }
             menuItem(test, remote, "自动屏幕旋转");
             check(!prefs.getBoolean("autoRotate", true) && !remote.autoRotateEnabled(), "Rotation toggle not saved");
@@ -266,7 +266,7 @@ final class UiControlsSmoke {
             state.shell("wm user-rotation lock 1");
             until(() -> original.width > original.height && original.renderedFrames() > frames + 2, 15, "Floating video did not rotate");
             check(context.getSystemService(android.hardware.display.DisplayManager.class).getDisplay(0).getRotation() == localRotation, "Floating mode forced controller orientation");
-            check(state.session == original, "Floating rotation replaced session");
+            check(state.current().session == original, "Floating rotation replaced session");
             DebugLog.write("TEST native rotation 0/90/180/270, opt-out/persistence, remote panels, unchanged floating rotation PASS");
             return "PASS native UI rotation 0/90/180/270, same session, persisted toggle, remote notifications/quick settings/collapse, floating rotation unchanged";
         } finally {
@@ -275,7 +275,7 @@ final class UiControlsSmoke {
             SharedPreferences.Editor edit = prefs.edit(); if (hadAuto) edit.putBoolean("autoRotate", oldAuto); else edit.remove("autoRotate"); edit.apply();
         }
     }
-    private static void checkAspect(FloatingWindowService floating, ScrcpySession session) throws Exception {
+    private static void checkAspect(FloatingWindow floating, ScrcpySession session) throws Exception {
         until(() -> floating.display.video.getWidth() > 0 && floating.display.video.getHeight() > 0, 5, "Floating video has no size");
         double rendered = floating.display.video.getWidth() / (double)floating.display.video.getHeight();
         check(Math.abs(rendered - session.width / (double)session.height) < .008, "Window resize stretched the remote image");
@@ -292,7 +292,7 @@ final class UiControlsSmoke {
         String touches = state.shell("logcat -d -s ScrcpyProbe:I '*:S'");
         test.runOnMainSync(remote::requestFloatingWindow);
         until(() -> FloatingWindowService.isShowing() && remote.isFinishing(), 15, "Window did not attach");
-        FloatingWindowService floating = FloatingWindowService.current();
+        FloatingWindow floating = FloatingWindowService.current();
         // Let the controller finish returning from remote-oriented fullscreen
         // to its normal UI before measuring an overlay resize.
         test.waitForIdleSync(); Thread.sleep(800);

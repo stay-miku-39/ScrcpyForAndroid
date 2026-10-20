@@ -22,11 +22,22 @@ public class SmokeInstrumentation extends Instrumentation {
     }
     @Override public void onStart() {
         Bundle result = new Bundle(); RuntimeState runtime = null; RemoteActivity remote = null; String autoRotate = null;
+        Map<String, ?> streamBefore = null;
         try {
             Context context = getTargetContext(); runtime = RuntimeState.get(context);
+            if ("true".equals(args.getString("defaultMedia"))) {
+                streamBefore = StreamPreferences.get(context).getAll(); StreamPreferences.save(context, StreamSettings.DEFAULTS);
+            }
             Identity again = new Identity(context);
             check(Arrays.equals(again.certificate.getPublicKey().getEncoded(), new Identity(context).certificate.getPublicKey().getEncoded()), "Identity must survive reload");
             String host = args.getString("host", "10.0.2.2"); int port = Integer.parseInt(args.getString("port", "15558"));
+            if (args.containsKey("mediaCase")) {
+                result.putString("result", StreamSettingsSmoke.run(this, context, runtime, host, port, args.getString("mediaCase"))); return;
+            }
+            if ("true".equals(args.getString("multiDevice"))) {
+                if (!args.containsKey("secondHost") || !args.containsKey("secondPort")) throw new IllegalArgumentException("secondHost/secondPort required");
+                result.putString("result", MultiDeviceSmoke.run(this, context, runtime, host, port, args.getString("secondHost"), Integer.parseInt(args.getString("secondPort")))); return;
+            }
             if (args.containsKey("uiStage")) {
                 result.putString("result", UiControlsSmoke.run(this, context, runtime, host, port, args.getString("uiStage"))); return;
             }
@@ -87,13 +98,13 @@ public class SmokeInstrumentation extends Instrumentation {
                 check(runtime.adb.pair(host, Integer.parseInt(args.getString("pairPort")), args.getString("pin")), "Pairing failed");
                 DebugLog.write("TEST pairing PASS");
             }
-            check(runtime.adb.connect(host, port), "ADB connect timed out"); runtime.target = host + ":" + port;
+            check(runtime.connect(host, port) != null, "ADB connect timed out");
             runtime.shell("logcat -c");
             check(runtime.shell("echo scrcpy-android-smoke").contains("scrcpy-android-smoke"), "Shell mismatch");
             DebugLog.write("TEST shell and persistent identity PASS");
             byte[] bytes = new byte[262151]; new Random(12345).nextBytes(bytes);
-            AdbSync.push(runtime.adb, new ByteArrayInputStream(bytes), "/sdcard/Download/scrcpy-smoke.bin");
-            ByteArrayOutputStream pulled = new ByteArrayOutputStream(); AdbSync.pull(runtime.adb, "/sdcard/Download/scrcpy-smoke.bin", pulled);
+            AdbSync.push(runtime.current().adb, new ByteArrayInputStream(bytes), "/sdcard/Download/scrcpy-smoke.bin");
+            ByteArrayOutputStream pulled = new ByteArrayOutputStream(); AdbSync.pull(runtime.current().adb, "/sdcard/Download/scrcpy-smoke.bin", pulled);
             check(Arrays.equals(MessageDigest.getInstance("SHA-256").digest(bytes), MessageDigest.getInstance("SHA-256").digest(pulled.toByteArray())), "File SHA-256 mismatch");
             runtime.shell("rm /sdcard/Download/scrcpy-smoke.bin"); DebugLog.write("TEST bidirectional file SHA-256 PASS");
             CountDownLatch scanned = new CountDownLatch(1); List<Integer> ports = new ArrayList<>();
@@ -158,12 +169,16 @@ public class SmokeInstrumentation extends Instrumentation {
                     ClipData clip = manager.getPrimaryClip(); match[0] = clip != null && "remote-clipboard-安卓".contentEquals(clip.getItemAt(0).getText());
                 }); return match[0];
             }, 10, "Remote clipboard did not sync to host");
+            // Let the explicit get plus autosync deliveries finish before changing direction.
+            // Both emulators can also mirror the host clipboard asynchronously.
+            Thread.sleep(2000);
+            until(activity::hasWindowFocus, 10, "Clipboard source activity lost foreground focus");
             runOnMainSync(() -> ((ClipboardManager)context.getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("smoke", "host-clipboard-安卓")));
             until(() -> state.shell("logcat -d -s ScrcpyProbe:I '*:S'").contains("clipboard=host-clipboard-安卓"), 10, "Host clipboard did not sync to target");
             DebugLog.write("TEST bidirectional text clipboard PASS");
             int oldWidth = activity.session.width;
             activity.session.send(new byte[]{11});
-            until(() -> activity.session.width != oldWidth && activity.session.currentRenderedFrames() >= 5, 15, "Rotation did not render new frames");
+            until(() -> activity.session.width != oldWidth && activity.session.currentRenderedFrames() >= 5, 45, "Rotation did not render new frames");
             DebugLog.write("TEST rotation PASS");
             if ("true".equals(args.getString("windowUi"))) {
                 check(android.provider.Settings.canDrawOverlays(context), "Grant overlay permission to this test emulator first");
@@ -172,9 +187,9 @@ public class SmokeInstrumentation extends Instrumentation {
                 sendKeySync(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_UP));
                 runOnMainSync(activity::requestFloatingWindow);
                 until(() -> FloatingWindowService.isShowing() && activity.isFinishing() && original.renderedFrames() > before + 5 && original.audioBytes > beforeAudio + 8192, 20, "Floating output did not continue");
-                check(runtime.session == original && !original.isClosed(), "Switching window restarted session");
+                check(runtime.current().session == original && !original.isClosed(), "Switching window restarted session");
                 until(() -> state.shell("logcat -d -s ScrcpyProbe:I '*:S'").contains("key action=1 code=24"), 10, "Held volume key not released during handoff");
-                FloatingWindowService floating = FloatingWindowService.current();
+                FloatingWindow floating = FloatingWindowService.current();
                 runtime.shell("logcat -c");
                 int localVolume = ((android.media.AudioManager)context.getSystemService(Context.AUDIO_SERVICE)).getStreamVolume(android.media.AudioManager.STREAM_MUSIC);
                 sendKeySync(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_DOWN)); sendKeySync(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_VOLUME_DOWN));
@@ -203,8 +218,8 @@ public class SmokeInstrumentation extends Instrumentation {
                 runOnMainSync(restored::requestFloatingWindow);
                 until(() -> FloatingWindowService.isShowing() && restored.isFinishing(), 15, "Second window did not open");
                 runOnMainSync(() -> context.stopService(new Intent(context, FloatingWindowService.class)));
-                until(() -> !FloatingWindowService.isShowing() && state.session == null, 15, "Closing window left a live mirror");
-                check(runtime.adb.isConnected(), "Closing window disconnected ADB");
+                until(() -> !FloatingWindowService.isShowing() && state.current().session == null, 15, "Closing window left a live mirror");
+                check(runtime.current().adb.isConnected(), "Closing window disconnected ADB");
                 DebugLog.write("TEST floating close preserves ADB PASS");
             }
             result.putString("result", "PASS identity, shell, files, scan, video, audio, multi-touch, clipboard, rotation, HOME");
@@ -214,10 +229,11 @@ public class SmokeInstrumentation extends Instrumentation {
             runOnMainSync(() -> getTargetContext().stopService(new Intent(getTargetContext(), FloatingWindowService.class)));
             if (remote != null) { RemoteActivity activity = remote; runOnMainSync(activity::finish); }
             if (runtime != null) {
-                if (runtime.session != null) runtime.session.close();
-                try { if (autoRotate != null) runtime.shell("wm user-rotation lock 0; settings put system accelerometer_rotation " + ("1".equals(autoRotate) ? "1" : "0")); runtime.adb.disconnect(); }
+                if (runtime.current() != null && runtime.current().session != null) runtime.current().session.close();
+                try { if (autoRotate != null) runtime.shell("wm user-rotation lock 0; settings put system accelerometer_rotation " + ("1".equals(autoRotate) ? "1" : "0")); runtime.disconnect(runtime.current()); }
                 catch (Exception ignored) { }
             }
+            if (streamBefore != null) StreamSettingsSmoke.restore(StreamPreferences.get(getTargetContext()), streamBefore);
             finish(result.getString("result", "FAIL").startsWith("PASS") ? Activity.RESULT_OK : Activity.RESULT_CANCELED, result);
         }
     }
