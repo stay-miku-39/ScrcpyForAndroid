@@ -20,6 +20,7 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
     SurfaceView video;
     RemoteDisplay display;
     Button ball;
+    QualityOverlay qualityOverlay;
     RemoteKeyActions powerKeys;
     private FrameLayout root;
     private TextView status;
@@ -61,6 +62,7 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         display = new RemoteDisplay(this, device, intent.getBooleanExtra("audio", true), this); video = display.video;
         root.addView(display, 0, new FrameLayout.LayoutParams(-1, -1));
         status("正在连接：" + device.target);
+        updateQuality();
     }
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -84,6 +86,9 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         status = new TextView(this); status.setTextColor(Color.WHITE); status.setTextSize(14); status.setText("正在连接…");
         status.setBackgroundColor(0xB0182841); status.setPadding(dp(16), dp(10), dp(16), dp(10));
         root.addView(status, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
+        qualityOverlay = new QualityOverlay(this);
+        FrameLayout.LayoutParams qualityPosition = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.LEFT);
+        qualityPosition.setMargins(dp(8), dp(8), dp(8), dp(8)); root.addView(qualityOverlay, qualityPosition);
         ball = new Button(this); ball.setText("⋮"); ball.setTextSize(26); ball.setPadding(0, 0, 0, 0); ball.setMinWidth(0); ball.setMinimumWidth(0);
         ball.setTextColor(Color.WHITE); ball.setContentDescription("远程控制菜单，拖动可移动");
         ball.setBackground(MainUi.background(0xE62463E1, 0, 28, this));
@@ -124,6 +129,12 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         int left = Math.max(dp(8), safe.left), top = Math.max(dp(8), safe.top);
         ball.setX(left + ballX * Math.max(0, root.getWidth() - left - Math.max(dp(8), safe.right) - dp(48)));
         ball.setY(top + ballY * Math.max(0, root.getHeight() - top - Math.max(dp(8), safe.bottom) - dp(48)));
+        if (qualityOverlay != null) {
+            FrameLayout.LayoutParams position = (FrameLayout.LayoutParams)qualityOverlay.getLayoutParams();
+            int qualityLeft = safe.left + dp(8), qualityTop = safe.top + dp(8);
+            if (position.leftMargin != qualityLeft || position.topMargin != qualityTop) { position.leftMargin = qualityLeft; position.topMargin = qualityTop; qualityOverlay.setLayoutParams(position); }
+            qualityOverlay.setMaxWidth(Math.max(dp(120), root.getWidth() - qualityLeft - safe.right - dp(8)));
+        }
     }
     private void saveUi() { getSharedPreferences("remote-ui", MODE_PRIVATE).edit().putFloat("ballX", ballX).putFloat("ballY", ballY).putBoolean("clipboard", syncClipboard).putBoolean("volumeKeys", syncVolume).apply(); }
     private void toggleMenu() {
@@ -134,6 +145,7 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         addRow(panel, new String[]{"返回", "主页", "最近"}, new Runnable[]{() -> key(KeyEvent.KEYCODE_BACK), () -> key(KeyEvent.KEYCODE_HOME), () -> key(KeyEvent.KEYCODE_APP_SWITCH)});
         addRow(panel, new String[]{"音量+", "音量−", "旋转"}, new Runnable[]{() -> key(KeyEvent.KEYCODE_VOLUME_UP), () -> key(KeyEvent.KEYCODE_VOLUME_DOWN), () -> { if (session != null) session.send(new byte[]{11}); }});
         addRow(panel, new String[]{"电源与唤醒"}, new Runnable[]{this::showPowerMenu});
+        addRow(panel, new String[]{"质量参数"}, new Runnable[]{this::showQualityMenu});
         addRow(panel, new String[]{"通知栏", "快捷设置", "收起通知"}, new Runnable[]{() -> panelCommand(5), () -> panelCommand(6), () -> panelCommand(7)});
         CheckBox rotation = new CheckBox(this); rotation.setText("自动屏幕旋转"); rotation.setTextColor(MainUi.INK); rotation.setChecked(autoRotate);
         rotation.setButtonTintList(android.content.res.ColorStateList.valueOf(MainUi.BLUE));
@@ -159,6 +171,22 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         addRow(panel, new String[]{"长按电源"}, new Runnable[]{() -> powerKeys.pulse(800, KeyEvent.KEYCODE_POWER)});
         addRow(panel, new String[]{"电源 + 音量−", "电源 + 音量+"}, new Runnable[]{() -> powerKeys.pulse(400, KeyEvent.KEYCODE_POWER, KeyEvent.KEYCODE_VOLUME_DOWN), () -> powerKeys.pulse(400, KeyEvent.KEYCODE_POWER, KeyEvent.KEYCODE_VOLUME_UP)});
         showMenuPanel(panel, 320);
+    }
+    void showQualityMenu() {
+        dismissMenu();
+        LinearLayout panel = new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL); panel.setPadding(dp(12), dp(12), dp(12), dp(12));
+        panel.setBackground(MainUi.background(Color.WHITE, 0, 18, this));
+        TextView title = new TextView(this); title.setText("质量参数"); title.setTextSize(19); title.setTextColor(MainUi.INK); panel.addView(title);
+        TextView note = new TextView(this); note.setText("仅全屏前台统计勾选项。此菜单立即生效；外观在主设置页保存。视频延迟为本地解码排队/处理时间，ADB 往返含 Shell 开销，均不是端到端延迟。"); note.setTextColor(MainUi.MUTED); panel.addView(note);
+        SharedPreferences prefs = UiPreferences.get(this);
+        CheckBox enabled = new CheckBox(this); enabled.setText("显示质量参数"); enabled.setTextColor(MainUi.INK); enabled.setChecked(prefs.getBoolean(UiPreferences.QUALITY_ENABLED, false)); enabled.setTag("qualityMaster"); panel.addView(enabled);
+        enabled.setOnCheckedChangeListener((v, value) -> prefs.edit().putBoolean(UiPreferences.QUALITY_ENABLED, value).apply());
+        for (int i = 0; i < QualityStats.ITEMS.length; i++) {
+            int bit = QualityStats.ITEMS[i]; CheckBox item = new CheckBox(this); item.setText(QualityStats.LABELS[i]); item.setTextColor(MainUi.INK); item.setTag("qualityItem" + bit);
+            item.setChecked((prefs.getInt(UiPreferences.QUALITY_ITEMS, QualityStats.FPS | QualityStats.VIDEO_RATE) & bit) != 0); panel.addView(item);
+            item.setOnCheckedChangeListener((v, value) -> { int old = prefs.getInt(UiPreferences.QUALITY_ITEMS, QualityStats.FPS | QualityStats.VIDEO_RATE); prefs.edit().putInt(UiPreferences.QUALITY_ITEMS, value ? old | bit : old & ~bit).apply(); });
+        }
+        addRow(panel, new String[]{"返回远控菜单"}, new Runnable[]{this::toggleMenu}); showMenuPanel(panel, 470);
     }
     private void showMenuPanel(LinearLayout panel, int maxHeightDp) {
         ScrollView scroll = new ScrollView(this) {
@@ -187,7 +215,9 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
     private void applyAppearance() {
         if (ball != null) ball.setAlpha(UiPreferences.opacity(this, UiPreferences.BALL));
         if (menu != null) menu.getContentView().setAlpha(UiPreferences.opacity(this, UiPreferences.MENU));
+        updateQuality();
     }
+    private void updateQuality() { if (qualityOverlay != null) qualityOverlay.bind(session, display, resumed && !switchingWindow && !pendingFloating && !isFinishing()); }
     private void key(int code) { if (session != null && display.ownsSession()) session.key(code); }
     private void panelCommand(int type) { if (session != null && display.ownsSession()) session.send(new byte[]{(byte)type}); }
     // Local predictive back is registered with OnBackPressedDispatcher above.
@@ -263,6 +293,7 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         FloatingWindowService.removeTransferred(device.target);
         updateRotationMonitor();
         if (pendingFloating) { pendingFloating = false; requestFloatingWindow(); }
+        updateQuality();
     }
     @Override public void status(String message) {
         if (microphone != null && microphone.isActive()) message += "\n麦克风正在转发至：" + microphone.targetPackage;
@@ -385,11 +416,13 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         resumePendingMicrophone();
         if (clipboard != null) clipboard.addPrimaryClipChangedListener(clipListener);
         if (runtime != null && getIntent().getBooleanExtra("audio", true)) runtime.acquireAudioFocus(this);
+        updateQuality();
     }
     private void statusServiceFailure(RuntimeException error) { DebugLog.error("foreground service", error); Toast.makeText(this, "后台服务启动失败：" + error.getMessage(), Toast.LENGTH_LONG).show(); }
     @Override protected void onUserLeaveHint() { userLeaving = true; super.onUserLeaveHint(); }
     @Override protected void onPause() {
         resumed = false; stopRotationMonitor(); if (powerKeys != null) powerKeys.release();
+        if (qualityOverlay != null) qualityOverlay.stop();
         if (!awaitingMicrophonePermission) stopMicrophone(); releaseKeys();
         if (display != null) display.releaseTouches();
         if (clipboard != null) clipboard.removePrimaryClipChangedListener(clipListener);
@@ -410,6 +443,7 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
     @Override protected void onDestroy() {
         UiPreferences.get(this).unregisterOnSharedPreferenceChangeListener(appearanceListener);
         stopRotationMonitor(); stopMicrophone(); dismissMenu(); releaseKeys();
+        if (qualityOverlay != null) qualityOverlay.stop();
         if (powerKeys != null) powerKeys.release();
         if (display != null) display.dispose();
         if (runtime != null) { if (runtime.fullscreen == this) runtime.fullscreen = null; runtime.releaseAudioFocusIfIdle(this); }

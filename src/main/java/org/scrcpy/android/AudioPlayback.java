@@ -13,8 +13,16 @@ final class AudioPlayback implements AutoCloseable {
     private final Sink sink;
     private final BooleanSupplier running;
     private MediaCodec decoder;
-    AudioPlayback(String format, String decoderName, BooleanSupplier running, Sink sink) { this.format = format; this.decoderName = decoderName; this.running = running; this.sink = sink; }
+    private final QualityStats quality;
+    volatile String actualDecoder = "";
+    AudioPlayback(String format, String decoderName, BooleanSupplier running, Sink sink, QualityStats quality) { this.format = format; this.decoderName = decoderName; this.running = running; this.sink = sink; this.quality = quality; }
     void feed(MediaPacket packet) throws IOException {
+        long started = quality.enabled(QualityStats.AUDIO_DELAY) && !packet.config ? System.nanoTime() : 0;
+        try { feedPacket(packet); }
+        finally { if (started != 0 && quality.enabled(QualityStats.AUDIO_DELAY)) quality.audioProcessing(System.nanoTime() - started); }
+    }
+    private void feedPacket(MediaPacket packet) throws IOException {
+        if (quality.enabled(QualityStats.CODECS) && actualDecoder.isEmpty() && decoder != null) actualDecoder = decoder.getName();
         if ("raw".equals(format)) { if (!packet.config) sink.pcm(packet.data); return; }
         if (packet.config) { configure(packet.data); return; }
         if (decoder == null) throw new IOException("Audio data before codec configuration");
@@ -45,7 +53,8 @@ final class AudioPlayback implements AutoCloseable {
             media.setByteBuffer("csd-2", nativeLong(80000000L));
         }
         decoder = decoderName.isEmpty() ? MediaCodec.createDecoderByType(StreamSettings.audioMime(format)) : MediaCodec.createByCodecName(decoderName);
-        try { decoder.configure(media, null, null, 0); decoder.start(); DebugLog.write("audio decoder=" + decoder.getName()); }
+        if (quality.enabled(QualityStats.CODECS)) actualDecoder = decoder.getName();
+        try { decoder.configure(media, null, null, 0); decoder.start(); if (DebugLog.isEnabled()) DebugLog.write("audio decoder=" + decoder.getName()); }
         catch (RuntimeException error) { decoder.release(); decoder = null; throw error; }
     }
     private static ByteBuffer nativeLong(long value) { ByteBuffer data = ByteBuffer.allocate(8).order(ByteOrder.nativeOrder()); data.putLong(value); data.flip(); return data; }

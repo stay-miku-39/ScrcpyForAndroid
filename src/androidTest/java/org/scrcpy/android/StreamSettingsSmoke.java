@@ -31,12 +31,15 @@ final class StreamSettingsSmoke {
             else if ("codecs".equals(stage)) smoke.codecs();
             else if ("fallback".equals(stage)) smoke.fallback();
             else if ("presets".equals(stage)) smoke.presets();
+            else if ("stages".equals(stage)) smoke.stages();
+            else if ("quality".equals(stage)) smoke.quality();
+            else if ("touchHold".equals(stage)) smoke.touchHold();
             else throw new IllegalArgumentException("Unknown mediaCase: " + stage);
             check(identity.equals(device.adb.fingerprint()), "Media settings changed ADB identity");
             check(original.equals(device.shell("wm size")), "Target size was not restored");
             return "PASS media " + stage + ", persistent identity, target size restored";
         } finally {
-            smoke.close(); restore(StreamPreferences.get(context), saved); restore(UiPreferences.get(context), ui);
+            smoke.close(); restore(StreamPreferences.get(context), saved); restore(UiPreferences.get(context), ui); DebugLog.setEnabled(UiPreferences.get(context).getBoolean(UiPreferences.DEBUG_LOG, false));
             device.shell("am force-stop org.scrcpy.android.test");
         }
     }
@@ -53,6 +56,125 @@ final class StreamSettingsSmoke {
         Map<String, String> values = new LinkedHashMap<>(StreamSettings.DEFAULTS);
         values.put("resolution", "custom"); values.put("customWidth", "360"); values.put("customHeight", "640"); values.put("maxSize", "640"); values.put("fps", "30");
         for (int i = 0; i < pairs.length; i += 2) values.put(pairs[i], pairs[i+1]); StreamPreferences.save(context, values);
+    }
+    private void stages() throws Exception {
+        UiPreferences.get(context).edit().putBoolean(UiPreferences.DEBUG_LOG, true).apply(); DebugLog.setEnabled(true);
+        String marker = "TEST phase-run-" + System.nanoTime(); DebugLog.write(marker);
+        configure();
+        ScrcpySession current = start(true);
+        until(() -> {
+            String text=new String(java.nio.file.Files.readAllBytes(DebugLog.file(context).toPath()),java.nio.charset.StandardCharsets.UTF_8);
+            return text.contains(marker) && text.substring(text.lastIndexOf(marker)).contains("connect stage=first-frame result=ok");
+        }, 5, "Phase log not flushed");
+        String log = new String(java.nio.file.Files.readAllBytes(DebugLog.file(context).toPath()), java.nio.charset.StandardCharsets.UTF_8);
+        log=log.substring(log.lastIndexOf(marker));
+        for (String stage : new String[]{"upload", "capabilities", "display-query", "display-apply", "server-prepare", "server-launch", "video-channel", "handshake", "decoder-init", "first-frame"})
+            check(log.contains("connect stage=" + stage + " result=ok durationMs="), "Missing successful phase: " + stage);
+        check(log.contains("connect settings target=" + device.target) && log.contains("requested=360x640"), "Missing effective startup parameters");
+        check(current.currentRenderedFrames() > 0, "Phase reporting prevented playback");
+        close();
+    }
+    private void quality() throws Exception {
+        configure("audioCodec", "opus");
+        UiPreferences.get(context).edit().putBoolean(UiPreferences.QUALITY_ENABLED, false).putInt(UiPreferences.QUALITY_ITEMS, QualityStats.VIDEO_RATE).apply();
+        ScrcpySession current = start(true);
+        check(current.quality.mask == 0 && activity.qualityOverlay.getVisibility() == View.GONE, "Disabled panel still collects statistics");
+        test.runOnMainSync(() -> { activity.showQualityMenu(); ((CheckBox)activity.menuContent().findViewWithTag("qualityMaster")).setChecked(true); });
+        until(() -> current.quality.mask == QualityStats.VIDEO_RATE && activity.qualityOverlay.getText().toString().contains("Mbps"), 8, "Selected rate did not appear");
+        QualityStats.Sample onlyVideo = current.quality.sample();
+        check(onlyVideo.decodedFps == 0 && onlyVideo.audioKbps == 0 && onlyVideo.controlPps == 0 && onlyVideo.videoDelayMs < 0, "Unselected statistics accumulated");
+        test.runOnMainSync(() -> {
+            activity.showQualityMenu();
+            for (int bit : QualityStats.ITEMS) { CheckBox item = activity.menuContent().findViewWithTag("qualityItem" + bit); item.setChecked(true); }
+            activity.ball.performClick();
+        });
+        until(() -> current.quality.mask == QualityStats.ALL, 5, "Quality selections not applied");
+        touch(activity.display);
+        until(() -> activity.qualityOverlay.getText().toString().contains("本地视频解码") && activity.qualityOverlay.getText().toString().contains("ADB 往返"), 8, "Quality details missing");
+        until(() -> {
+            QualityStats.Sample all = activity.qualityOverlay.lastSample;
+            return all != null && all.mask == QualityStats.ALL && all.decodedFps > 0 && all.audioKbps > 0 && all.videoDelayMs >= 0 && all.audioProcessingMs >= 0;
+        }, 8, "Selected live metrics have no samples: " + activity.qualityOverlay.getText());
+        until(() -> activity.qualityOverlay.lastSample != null && activity.qualityOverlay.lastSample.rttMs >= 0, 8, "Selected ADB round-trip probe produced no sample");
+        device.shell("logcat -c");
+        test.runOnMainSync(() -> {
+            View root=(View)activity.qualityOverlay.getParent();
+            // Stay below the target's status bar while touching through the
+            // overlay. The video's very top maps to system chrome, not the probe.
+            float x=activity.display.getX()+activity.video.getX()+activity.video.getWidth()*.2f;
+            float y=activity.display.getY()+activity.video.getY()+activity.video.getHeight()*.15f;
+            check(x>=activity.qualityOverlay.getX() && x<activity.qualityOverlay.getRight()
+                    && y>=activity.qualityOverlay.getY() && y<activity.qualityOverlay.getBottom(), "Touch fixture missed quality text bounds");
+            long down=SystemClock.uptimeMillis();
+            for(int action:new int[]{MotionEvent.ACTION_DOWN,MotionEvent.ACTION_UP}) {
+                MotionEvent event=MotionEvent.obtain(down,SystemClock.uptimeMillis(),action,x,y,0); root.dispatchTouchEvent(event); event.recycle();
+            }
+        });
+        until(() -> device.shell("logcat -d -s ScrcpyProbe:I '*:S'").contains("touch action=1 pointers=1"),5,"Quality text intercepted remote touch");
+        test.runOnMainSync(() -> {
+            check(activity.qualityOverlay.getBackground() instanceof android.graphics.drawable.ColorDrawable && ((android.graphics.drawable.ColorDrawable)activity.qualityOverlay.getBackground()).getColor() == android.graphics.Color.TRANSPARENT, "Panel background is opaque");
+            check(activity.qualityOverlay.getX() <= MainUi.dp(context, 40) && activity.qualityOverlay.getY() <= MainUi.dp(context, 60), "Panel is not top-left");
+        });
+        android.graphics.Bitmap capture = test.getUiAutomation().takeScreenshot(); check(capture != null, "Quality screenshot missing");
+        java.io.File folder = context.getExternalFilesDir("quality-smoke");
+        try (java.io.OutputStream out = new java.io.FileOutputStream(new java.io.File(folder, "fullscreen-quality.png"))) { capture.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out); }
+        finally { capture.recycle(); }
+        MainActivity main = (MainActivity)test.startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            until(() -> current.quality.mask == 0, 5, "Background output retained statistics");
+            test.runOnMainSync(() -> {
+                main.ui.select("settings"); View root = main.getWindow().getDecorView();
+                ((EditText)root.findViewWithTag(UiPreferences.QUALITY_COLOR)).setText("#00FF88");
+                ((SeekBar)root.findViewWithTag(UiPreferences.QUALITY_OPACITY)).setProgress(62);
+                check(UiPreferences.qualityColor(UiPreferences.get(context)) != android.graphics.Color.rgb(0,255,136), "Unsaved font color applied");
+                root.findViewWithTag("saveStreamSettings").performClick();
+            });
+        } finally { test.runOnMainSync(main::finish); }
+        until(() -> activity.hasWindowFocus() && activity.display.ownsSession() && current.quality.mask == QualityStats.ALL, 12, "Foreground did not restart selected metrics");
+        test.runOnMainSync(() -> check(activity.qualityOverlay.getCurrentTextColor() == android.graphics.Color.rgb(0,255,136) && Math.abs(activity.qualityOverlay.getAlpha()-.62f)<.001f, "Saved font appearance not applied"));
+        test.runOnMainSync(activity::requestFloatingWindow);
+        until(() -> FloatingWindowService.isShowing() && activity.isFinishing() && FloatingWindowService.current().display.ownsSession() && current.quality.mask == 0, 12, "Floating output did not complete ownership handoff or retained statistics");
+        FloatingWindow floating = FloatingWindowService.current();
+        check(floating.windowView().findViewWithTag("qualityOverlay") == null, "Floating output contains quality panel");
+        android.app.Instrumentation.ActivityMonitor monitor = test.addMonitor(RemoteActivity.class.getName(), null, false);
+        try {
+            test.runOnMainSync(() -> floating.fullscreenButton.performClick());
+            activity = (RemoteActivity)test.waitForMonitorWithTimeout(monitor, 15000); check(activity != null, "Fullscreen restore failed");
+            until(() -> activity.session == current && current.quality.mask == QualityStats.ALL, 12, "Handoff replaced session or lost selections");
+            test.runOnMainSync(() -> { activity.showQualityMenu(); ((CheckBox)activity.menuContent().findViewWithTag("qualityMaster")).setChecked(false); });
+            until(() -> current.quality.mask == 0 && activity.qualityOverlay.getVisibility() == View.GONE, 5, "Panel did not stop statistics");
+            until(() -> Thread.getAllStackTraces().keySet().stream().noneMatch(t -> t.isAlive() && "quality-frame-callback".equals(t.getName())), 5, "Disabled panel retained frame callback worker");
+        } finally { test.removeMonitor(monitor); }
+        close();
+    }
+    private void touchHold() throws Exception {
+        configure(); ScrcpySession current = start(false); device.shell("logcat -c");
+        android.view.MotionEvent.PointerProperties[] properties=new android.view.MotionEvent.PointerProperties[2];
+        android.view.MotionEvent.PointerCoords[] coordinates=new android.view.MotionEvent.PointerCoords[2];
+        for(int i=0;i<2;i++){properties[i]=new android.view.MotionEvent.PointerProperties();properties[i].id=i==0?7:42;properties[i].toolType=MotionEvent.TOOL_TYPE_FINGER;coordinates[i]=new android.view.MotionEvent.PointerCoords();coordinates[i].x=activity.video.getWidth()*(i+1)/3f;coordinates[i].y=activity.video.getHeight()/2f;coordinates[i].pressure=1;coordinates[i].size=1;}
+        long down=SystemClock.uptimeMillis();
+        test.runOnMainSync(() -> {
+            dispatchTouch(activity,down,MotionEvent.ACTION_DOWN,1,properties,coordinates);
+            dispatchTouch(activity,down,MotionEvent.ACTION_POINTER_DOWN | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT),2,properties,coordinates);
+            coordinates[1].x+=12; dispatchTouch(activity,down,MotionEvent.ACTION_MOVE,2,properties,coordinates);
+        });
+        Thread.sleep(1100); // Host test proxy withholds this stream's ACK for 700 ms.
+        String held=device.shell("logcat -d -s ScrcpyProbe:I '*:S'");
+        check(held.contains("touch action=0 pointers=1") && held.contains("touch action=5 pointers=2"),"Two fingers were not received");
+        check(!held.contains("touch action=6") && !held.contains("touch action=1"),"An expired MOVE cancelled a held finger");
+        for(int i=0;i<40;i++){
+            test.runOnMainSync(() -> { coordinates[1].x+=1;dispatchTouch(activity,down,MotionEvent.ACTION_MOVE,2,properties,coordinates); }); Thread.sleep(12);
+        }
+        test.runOnMainSync(() -> dispatchTouch(activity,down,MotionEvent.ACTION_POINTER_UP | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT),2,properties,coordinates));
+        until(() -> device.shell("logcat -d -s ScrcpyProbe:I '*:S'").contains("touch action=6 pointers=2"),5,"Second finger did not release");
+        String one=device.shell("logcat -d -s ScrcpyProbe:I '*:S'"); check(!one.contains("touch action=1 pointers=1"),"Releasing second finger cancelled first finger");
+        test.runOnMainSync(() -> {coordinates[0].x+=15;dispatchTouch(activity,down,MotionEvent.ACTION_MOVE,1,properties,coordinates);dispatchTouch(activity,down,MotionEvent.ACTION_UP,1,properties,coordinates);});
+        until(() -> device.shell("logcat -d -s ScrcpyProbe:I '*:S'").contains("touch action=1 pointers=1"),5,"Final finger did not release");
+        check(!current.isClosed(),"Input congestion ended the session"); close();
+    }
+    private static void dispatchTouch(RemoteActivity activity,long down,int action,int count,MotionEvent.PointerProperties[] properties,MotionEvent.PointerCoords[] coordinates){
+        MotionEvent event=MotionEvent.obtain(down,SystemClock.uptimeMillis(),action,count,properties,coordinates,0,0,1,1,0,0,InputDevice.SOURCE_TOUCHSCREEN,0);
+        activity.video.dispatchTouchEvent(event);event.recycle();
     }
     private ScrcpySession start(boolean audio) throws Exception {
         device.shell("input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard; am start -n org.scrcpy.android.test/org.scrcpy.android.TargetProbeActivity");

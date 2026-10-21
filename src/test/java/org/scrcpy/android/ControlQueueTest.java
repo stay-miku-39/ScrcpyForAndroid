@@ -44,25 +44,42 @@ public class ControlQueueTest {
         queue.offer(first); queue.offer(second);
         assertEquals(1, queue.size()); assertArrayEquals(second, queue.poll());
     }
-    @Test public void evictedDownDoesNotCreateOrphanMoveOrUp() {
+    @Test public void movementIsEvictedBeforeGestureEdges() {
         ControlQueue queue = queue(2); ControlInputState state = new ControlInputState();
         queue.offer(touch(0, 42, 10)); queue.offer(touch(2, 42, 20)); queue.offer(touch(1, 42, 20));
-        assertSame(ControlQueue.RESET, queue.poll());
-        assertEquals(0, state.prepare(queue.poll()).length); assertEquals(0, state.prepare(queue.poll()).length);
+        byte[] keptDown=queue.poll(); assertEquals(0,keptDown[1]); state.sent(state.prepare(keptDown));
+        byte[] keptUp=queue.poll(); assertEquals(1,keptUp[1]); state.sent(state.prepare(keptUp)); assertEquals(0,state.releases().length);
         byte[] down = touch(0, 42, 30); assertArrayEquals(down, state.prepare(down));
     }
-    @Test public void expiredUpReleasesPreviouslyTransmittedFingerAndHeldChord() {
+    @Test public void delayedTouchUpIsPreservedAndDoesNotCancelHeldChord() {
         ControlQueue queue = queue(64); ControlInputState state = new ControlInputState();
         state.sent(touch(0, 3, 5)); state.sent(ControlProtocol.keyGroup(0, 26, 25));
         queue.offer(touch(1, 3, 5)); clock.set(251);
-        assertSame(ControlQueue.RESET, queue.poll());
+        byte[] up=queue.poll(); assertEquals(1,up[1]);
         byte[] release = state.releases();
         assertEquals(60, release.length);
         assertEquals(1, release[1]); assertEquals(0, release[22]); assertEquals(0, release[23]);
         assertEquals(25, ByteBuffer.wrap(release, 34, 4).getInt());
         assertEquals(26, ByteBuffer.wrap(release, 48, 4).getInt());
+        state.sent(up); assertEquals(28,state.releases().length);
         state.released(); assertEquals(0, state.releases().length);
         assertEquals(0, state.prepare(touch(2, 3, 50)).length);
+    }
+    @Test public void severeEdgeOverflowStillRequestsSafeRelease() {
+        ControlQueue queue=queue(2); queue.offer(touch(0,1,0)); queue.offer(touch(1,1,0)); queue.offer(touch(0,2,0));
+        assertSame(ControlQueue.RESET,queue.poll());
+    }
+    @Test public void consecutiveMovesBatchWithoutCrossingUpAndFilterUnknownFingers() {
+        ControlQueue queue=queue(64); ControlInputState state=new ControlInputState(); state.sent(touch(0,1,0)); state.sent(touch(0,2,0));
+        queue.offer(touch(2,1,11)); queue.offer(touch(2,2,22)); queue.offer(touch(1,1,11)); queue.offer(touch(2,2,23));
+        byte[] batch=queue.pollForWrite(); assertEquals(64,batch.length); assertEquals(64,state.prepare(batch).length); state.sent(batch);
+        assertEquals(1,queue.pollForWrite()[1]); assertEquals(32,queue.pollForWrite().length);
+        byte[] oneFinger=ControlProtocol.packet(out -> {out.write(touch(2,1,40));out.write(touch(2,99,40));});
+        assertEquals(32,state.prepare(oneFinger).length);
+    }
+    @Test public void preservedUpAtHeadDoesNotBlockExpirationOfLaterMove() {
+        ControlQueue queue=queue(64); queue.offer(touch(1,1,0));queue.offer(touch(2,2,0));clock.set(350);
+        assertEquals(1,queue.poll()[1]);assertNull(queue.poll());
     }
     @Test public void staleKeyDownDropsItsRepeatAndUpButFreshChordRemainsAtomic() {
         ControlInputState state = new ControlInputState();

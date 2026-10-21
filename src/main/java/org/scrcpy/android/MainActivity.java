@@ -61,6 +61,7 @@ public class MainActivity extends androidx.activity.ComponentActivity {
         catch (Exception e) { new AlertDialog.Builder(this).setMessage("无法读取 ADB 身份：" + e).setPositiveButton("关闭", (d,w) -> finish()).show(); return; }
         ui = new MainUi(this, preferences);
         ui.build(saved);
+        CodecCatalog.start(this, () -> runOnUiThread(() -> { if (!isDestroyed() && ui != null) ui.codecCatalogReady(); }));
         getOnBackPressedDispatcher().addCallback(this, new androidx.activity.OnBackPressedCallback(true) {
             @Override public void handleOnBackPressed() { if (!ui.back()) finish(); }
         });
@@ -204,9 +205,9 @@ public class MainActivity extends androidx.activity.ComponentActivity {
     }
     @Override protected void onResume() {
         super.onResume();
-        if (ui != null) { ui.refresh(); if (!runtime.lastMessage.isEmpty()) show(runtime.lastMessage); if (runtime.operationRunning) status.post(operationWatcher); }
+        if (ui != null) { ui.discardSettingsDraft(); ui.refresh(); if (!runtime.lastMessage.isEmpty()) show(runtime.lastMessage); if (runtime.operationRunning) status.post(operationWatcher); }
     }
-    @Override protected void onPause() { if (status != null) status.removeCallbacks(operationWatcher); super.onPause(); }
+    @Override protected void onPause() { if (status != null) status.removeCallbacks(operationWatcher); if (ui != null) ui.discardSettingsDraft(); super.onPause(); }
     boolean isBusy() { return busy || runtime.operationRunning; }
     void disconnect() { disconnect(runtime.current()); }
     void disconnect(DeviceConnection device) {
@@ -232,8 +233,14 @@ public class MainActivity extends androidx.activity.ComponentActivity {
         }
     }); }
     void exportLogs() {
-        Intent share = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_STREAM, Uri.parse("content://org.scrcpy.android.logs/debug.log"))
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION); startActivity(Intent.createChooser(share, "导出调试日志"));
+        new Thread(() -> {
+            if (!DebugLog.file(this).isFile()) { show("暂无调试日志；请在设置中启用并保存后复现问题。"); return; }
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                Intent share = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_STREAM, Uri.parse("content://org.scrcpy.android.logs/debug.log"))
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION); startActivity(Intent.createChooser(share, "导出调试日志"));
+            });
+        }, "debug-log-export").start();
     }
     void chooseFile(boolean upload) {
         try {

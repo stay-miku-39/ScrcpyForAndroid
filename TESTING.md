@@ -1,5 +1,77 @@
 # Validation history
 
+## 0.6.1-dev settings, diagnostics, quality and touch continuity — 2026-10-21
+
+The six requested changes were implemented and tested one at a time, followed
+by the final focused regression below. The whole settings page now requires
+**Save all settings**; leaving discards unsaved drafts. Startup phases are
+separate in the UI, detailed diagnostics are opt-in, fullscreen quality metrics
+collect only selected items, local codec capabilities annotate formats and
+initialize fresh-install defaults, and stale touch MOVE no longer cancels other
+held fingers. The pinned server and vendored ADB sources are unchanged.
+
+- `:assembleDebug`, `:assembleDebugAndroidTest`: PASS, versionCode 9,
+  versionName `0.6.1-dev`, compile/target API 36, min API 30.
+- `:testDebugUnitTest`: 62 PASS. The 18 additional tests cover startup timing,
+  disabled/selective metric paths, local codec policy, and touch queue/order
+  behavior. Fifteen control/input tests include a five-pointer slow-consumer
+  fixture with 250,000 MOVE operations across 500 gestures.
+- Before modifying touch production code, three deterministic tests reproduced
+  the old failures: stale MOVE cancelled held fingers, an unsent stale DOWN
+  cancelled another hold, and a delayed UP released other pointers. All three
+  pass with the new policy. Critical-edge overflow still safely resets input;
+  ordinary key expiry keeps its existing safety behavior.
+- `:adb-library:testDebugUnitTest`: 29 PASS / 2 physical USB checks SKIP.
+- `:lintDebug`: PASS, 0 errors / 32 warnings; repeated after final test-fixture
+  corrections. Fullscreen intentionally keeps the platform TextView/theme;
+  Material/AppCompat remains scoped to floating controls.
+- APK signature verification PASS. Certificate SHA-256 matches the preserved
+  previous APK; replacement installs succeeded without clearing data, identity
+  or pairing records. The production manifest excludes instrumentation and probe
+  activities. Deliverable: `dist/ScrcpyForAndroid-0.6.1-dev-debug.apk`, with its
+  SHA-256 recorded in `dist/SHA256SUMS.txt`; older artifacts are retained.
+
+Final integration used two explicitly addressed Android 16 / API 36 x86_64
+emulators, with the existing target logical-size override restored exactly.
+No physical user device was operated for this development regression.
+
+| Final check | Actual result |
+| --- | --- |
+| `featureCase draft` | PASS: stream/background/appearance drafts do not write before Save; navigation and Home discard them; reentry reads saved preferences; explicit Save persists the whole page |
+| `featureCase logging` | PASS: unsaved logging switch has no effect; Save enables actual background append; Save off suppresses ordinary/error diagnostics; preference reload preserves the switch |
+| `featureCase codecDiscovery` | PASS: actual local MediaCodec directory and hardware labels; fresh-install initialization against isolated preference files; upgrades/existing/manual choices retained; capability refresh preserves an unsaved selection |
+| `mediaCase stages` | PASS: current-run upload through first-frame phases each have successful duration records and safe startup parameters; real video plays; identity and target size retained/restored |
+| `mediaCase quality` | PASS: off means no optional statistics; video-rate-only excludes other counters; selected Opus/audio/video/local-delay/RTT samples appear; transparent top-left text passes touches to the remote app; font color/alpha require Save; background/floating stop collection; fullscreen restoration reuses the same session; disabling removes the frame-callback worker |
+| `uiStage settings` | PASS: actual overflow/back navigation, 20% minimum, manual Save, ball/main/power menu alpha, active floating alpha only after Save, default reset and same-session fullscreen restore; identity/history unchanged |
+| `mediaCase main` | PASS: saving dimensions leaves the active session unchanged, reopening applies them; proportional fullscreen/floating fit, touch and non-silent PCM; close restores target size and retains ADB |
+| `mediaCase virtual` | PASS: INFO-level server output still supplies the virtual display ID with debug off; independent dimensions, audio/touch and same-session handoff; original size obeys the preferred route; virtual display removed on close |
+| `mediaCase fallback` | PASS: unavailable virtual app falls back to the main route; unsupported named codec selection falls back to playable H.264/PCM |
+| `defaultMedia true`, `windowUi true` | PASS: persistent identity, Shell, file SHA-256 roundtrip, scan, video/non-silent audio, two-pointer input, bidirectional clipboard, one rotation, HOME, physical volume down/up/repeat, floating touch and same-session roundtrip; closing remote retains ADB |
+| `mediaCase touchHold` with a test-only delayed-ACK proxy | PASS: exactly one control-stream OKAY delayed by 700 ms after the second finger DOWN; both fingers stay held, then move/release independently, and the session remains live; the proxy stopped afterwards |
+
+Every passing instrumentation row returned `result=PASS` and final
+`INSTRUMENTATION_CODE: -1`. Settings and fullscreen quality screenshots were
+inspected. Two final-fixture failures were corrected and rerun: the touch-through
+point originally mapped to the target status bar; a saved large floating window
+covered the injected settings-menu tap. These failures are not counted as PASS.
+Temporary preferences, target dimensions and test components were restored or
+stopped, and the task's temporary port forward was removed.
+
+Metric boundaries are explicit: Surface callbacks are not optical display FPS;
+media packets/rates exclude ADB/IP overhead; video delay includes local decoder
+queueing, audio processing includes decoder/output waiting, control rates count
+actual writes, and ADB round-trip includes Shell startup. The server does not
+report encoder duration, so that value is unavailable. Compressed-audio input
+and output PTS are not assumed identical for latency matching.
+
+Fresh-install recommendation is verified using the production initializer with
+isolated preferences rather than uninstalling/resetting the existing controller.
+Actual OEM codec/hardware variation, game touch feel, sustained weak Wi-Fi,
+long-duration power/thermal behavior and end-to-end optical/audio latency remain
+unverified. Full codec enumeration/playback combinations, four-way rotation,
+new PIN pairing, physical OTG, microphone and unrelated power/window suites were
+not rerun. The prior four-way rotation limitation below is not declared fixed.
+
 ## 0.6.0-dev resolution and media settings — 2026-10-21
 
 The settings page now saves a global startup snapshot: logical display size,

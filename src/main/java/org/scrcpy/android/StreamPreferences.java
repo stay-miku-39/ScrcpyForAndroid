@@ -16,7 +16,7 @@ final class StreamPreferences {
         for (Map.Entry<String, String> e : StreamSettings.DEFAULTS.entrySet()) v.put(e.getKey(), prefs.getString(e.getKey(), e.getValue()));
         return new StreamSettings(v, width, height);
     }
-    static void save(Context context, Map<String, String> values) {
+    static synchronized void save(Context context, Map<String, String> values) {
         StreamSettings.validate(values); SharedPreferences.Editor edit = get(context).edit();
         for (Map.Entry<String, String> e : values.entrySet()) edit.putString(e.getKey(), e.getValue()); edit.apply();
     }

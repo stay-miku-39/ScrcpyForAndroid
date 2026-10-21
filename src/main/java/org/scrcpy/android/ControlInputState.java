@@ -11,6 +11,9 @@ final class ControlInputState {
     private final Map<Integer, byte[]> keys = new LinkedHashMap<>();
 
     byte[] prepare(byte[] packet) {
+        if (ControlQueue.isMoveBatch(packet)) return ControlProtocol.packet(out -> {
+            for (int offset=0;offset<packet.length;offset+=32) if (pointers.containsKey(ByteBuffer.wrap(packet,offset+2,8).getLong())) out.write(packet,offset,32);
+        });
         if (ControlQueue.isTouch(packet)) {
             if (packet[1] != 0 && !pointers.containsKey(ControlQueue.pointer(packet))) return ControlQueue.RESET;
         } else if (isKeys(packet)) {
@@ -29,6 +32,10 @@ final class ControlInputState {
         return packet;
     }
     void sent(byte[] packet) {
+        if (ControlQueue.isMoveBatch(packet)) {
+            for (int offset=0;offset<packet.length;offset+=32) sent(java.util.Arrays.copyOfRange(packet,offset,offset+32));
+            return;
+        }
         if (ControlQueue.isTouch(packet)) {
             long pointer = ControlQueue.pointer(packet);
             if (packet[1] == 1) pointers.remove(pointer);

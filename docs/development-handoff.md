@@ -1,6 +1,6 @@
 # 开发接手文档
 
-整理日期：2026-10-21。源码基线为 0.6.0-dev（versionCode 8），此前 0.4.1 功能提交为 `2f877c1`。本文总结此前开发、实现选择和验证证据，供未读过聊天历史的 agent 接手。后续以用户最新要求和实际源码为准，修改后同步本文。
+整理日期：2026-10-21。源码基线为 0.6.1-dev（versionCode 9），此前 0.4.1 功能提交为 `2f877c1`。本文总结此前开发、实现选择和验证证据，供未读过聊天历史的 agent 接手。后续以用户最新要求和实际源码为准，修改后同步本文。
 
 ## 1. 项目目的与当前结论
 
@@ -40,6 +40,7 @@
 | 0.5.0 | 多端点 ADB、多小窗、单全屏、最新连接快捷入口、后台保活及可选自动小窗 | 每个设备固定自己的 ADB/session/output；后台继续停止敏感输入，不自动重启麦克风 |
 | 0.5.1 | 控制队列有效期/容量与 MOVE 合并、安全输入释放、解码输出追帧 | 队满不再结束会话；不能截断已开始的协议帧或随意丢 H.264 参考帧；尚未实测真机弱网 |
 | 0.6.0-dev | 分辨率与音视频全局启动快照、主屏/虚拟显示回退、压缩音频和可选编解码组件 | 设置仅新会话生效；逻辑尺寸与编码上限独立；原始尺寸也遵循路线偏好；退出恢复主屏已有 override |
+| 0.6.1-dev | 整页手动保存、连接阶段与可选日志、选择性质量统计、首次安装编解码推荐、多指长按连续性 | 未保存离开丢弃；质量仅全屏前台按选项采集；本地硬解不代表远端硬编；过期 MOVE 不取消长按，UP 保留 |
 
 主仓库现有关键提交：`5b99ccd` 仓库重组、`d6ae69a` 麦克风、`c1c97b9` 电源/方向/设置、`2f877c1` 小窗微调。0.1/0.2 的功能早于主仓库重组，不能推断它们各有独立的根仓库版本提交。
 
@@ -93,6 +94,10 @@ bundleScrcpyServer
 | `ControlProtocol.java` / `MediaPacket.java` | 固定 scrcpy 版本的控制序列化与动态视频会话/媒体包解析 |
 | `VideoDecoder.java` / `AudioPlayback.java` | MediaCodec 多格式视频/音频解码、PCM 播放输入及视频输出 Surface 切换 |
 | `StreamSettings.java` / `StreamPreferences.java` / `StreamSettingsView.java` | 校验后的不可变参数快照、全局持久化与设置页草稿/保存 |
+| `SettingsDraft.java` | 整页 UI 偏好内存草稿，只在保存时写修改键；避免回滚并发窗口位置 |
+| `CodecCatalog.java` / `CodecPolicy.java` | 异步本机硬件能力目录、一次初始化推荐策略、已有配置保留和选项标记 |
+| `ConnectionTrace.java` | 启动阶段状态、正常/失败耗时及关联 trace |
+| `QualityStats.java` / `QualityOverlay.java` | 按选项启停的计数/耗时，前台全屏透明文字、定时采样与有界 RTT 探针 |
 | `SessionDisplay.java` / `DisplaySizeState.java` / `DisplayFallback.java` | 主屏尺寸租约、持久恢复记录、原 override 解析和有界显示路线回退 |
 | `VideoFrameDrain.java` | 有界批次追赶解码输出，只显示该批最新可用帧 |
 | `RemoteDisplay.java` | 公共 SurfaceView、视频等比布局、触摸映射、多指释放、输出所有权 |
@@ -101,7 +106,7 @@ bundleScrcpyServer
 | `RemoteRotationMonitor.java` / `RemoteOrientation.java` | 后台物理显示方向查询、代次取消、四方向转换及比例回退 |
 | `FloatingWindowService.java` / `FloatingWindow.java` / `WindowGeometry.java` | 可交互 overlay、通知、两栏、图标、角落缩放、移动、边界/比例与恢复全屏 |
 | `RemoteDeviceName.java` | 解析显示用设备名/机型回退，不写已保存设备别名 |
-| `UiPreferences.java` | `remote-ui` 外观偏好及 20–100% 不透明度约束 |
+| `UiPreferences.java` | `remote-ui` 外观、质量与日志偏好；控制组件 20–100%、质量字体 0–100% 不透明度 |
 | `MicrophoneForwarder.java` | 可选主控 AudioRecord / PCM 转发、被控包名和 UID 查询、超时与清理 |
 | `DebugLog.java` / `LogProvider.java` | 滚动诊断日志及临时 URI 分享 |
 
@@ -137,12 +142,17 @@ flowchart LR
 | Android Keystore `scrcpy-adb-identity-v1` | 不可导出的 AES 包装密钥 |
 | `getNoBackupFilesDir()/adb-identity.enc` | AES-GCM 加密的 RSA 私钥和证书，AtomicFile 写入；解密失败不应静默换新身份 |
 | SharedPreferences `devices` | 主机、端口、音频选项、最近设备 JSON、别名/配对状态等 |
-| SharedPreferences `remote-ui` | 球位置、clipboard、volumeKeys、autoRotate、窗口位置/宽度、通知提示标记、三种 opacity |
+| SharedPreferences `remote-ui` | 球/窗口位置、菜单开关、后台偏好、控制组件和质量字体外观、质量选择及 debugLogging |
 | SharedPreferences `stream-settings` | 全局分辨率、显示路线、编解码格式/组件和性能参数；现有会话不监听变化 |
+| SharedPreferences `codec-discovery` | 首次初始化标记；升级或已有设置不覆盖，新安装只初始化一次 |
 | SharedPreferences `display-recovery` | 端点原有主屏尺寸 override/reset；先持久写入再覆盖，恢复确认后删除记录，不含身份材料 |
 | 临时 Intent / 字段 | PIN 只供当次配对，不保存；设备记录删除不撤销远端授权 |
 
 身份恢复依赖同一应用签名和 Keystore；覆盖安装使用 `adb install -r`。不要为修复连通性先 `pm clear` 或卸载。清除列表、重置身份和被控端撤销授权是不同操作。
+
+0.6.1-dev 整个设置页（音视频、后台、界面外观、诊断）使用页面草稿，只有底部“保存全部设置”通过校验后才写入。进入重建并读取配置；页面导航、Activity 暂停会丢弃未保存修改。UiPreferences 草稿只持久化修改键，不用整个旧快照覆盖并发的窗口几何。球菜单内质量/方向等开关仍即时保存。文件写入使用 SharedPreferences.apply；日志文件 I/O 使用有界后台线程。
+
+`CodecCatalog` 每进程后台枚举一次 MediaCodecList。仅首次安装（安装/更新时间相同、设备和 UI 偏好为空且流设置为空）应用推荐格式，之后只显示能力；初始化与手动保存使用同一锁。优先 H.264 本机硬解，音频优先硬解 AAC/Opus，否则可用 Opus/AAC 软件解码，保留组件自动选择。模拟器 goldfish 不强制推荐，运行时沿用已有 Surface 兼容回退。系统硬件标记是能力声明，不承诺所有参数都可用；被控端仍在连接时另外预检。
 
 ### 6.2 服务端、媒体和控制
 
@@ -154,11 +164,17 @@ flowchart LR
 
 主屏尺寸覆盖由 SessionDisplay 按端点共享租约保护；已有 override 不是物理原生尺寸，必须原样恢复，不能一律 `wm size reset`。新会话接管前恢复旧租约，旧会话延迟清理检查所有权；显式 ADB 断开在后台有界等待清理。异常断网/强停可能留下覆盖，记录保留到下次同端点会话恢复。新建虚拟显示时通过 16 号 START_APP 消息启动用户包名/默认桌面/系统设置，使用 `vd_destroy_content=false` 请求关闭后任务移回主屏；不保证所有 ROM/应用支持独立桌面。虚拟 display ID 来自固定配套服务端日志，方向查询必须使用该 ID。未接入 flex_display 或随窗口连续 resize。
 
-控制采用独立写线程和 `ControlQueue`：最多 64 条、总负载 512 KiB、有效期 250 ms，超时/溢出丢最早操作；同一触点的待发送 MOVE 保留最新值但不跨 DOWN/UP。等待 `AdbStream.awaitWriteReady()` 后才取队列并再次检查有效期，防止旧事件已出队后滞留在 WRTE 许可等待中。队满不再结束会话。`ControlInputState` 跟踪成功写入的触点和键；丢弃任何输入后，先集中补发已发送输入的 UP（组合键逆序），过滤没有已发送 DOWN 的 MOVE、键重复和 UP。被取消的持续手势需要松手重按。控制与媒体字段采用大端；`AdbSync` 的 sync v1 长度/数值使用小端，路径独立 UTF-8 编码，64 KiB 分块并设 10 分钟传输期限，不经 Shell 拼路径。
+控制采用独立写线程和 `ControlQueue`：最多 64 条、总负载 512 KiB、普通操作有效期 250 ms；0.6.1-dev 触控 UP 不过期，过期 MOVE/未发送 DOWN 不再全局释放其他触点，队满优先淘汰 MOVE。等待 `AdbStream.awaitWriteReady()` 后才取队列并检查有效期；同一连续 MOVE 段按 pointer 合并，不跨任何边界，最多 16 个完整 MOVE 帧组成一次 WRTE，减少逐指等待确认。按键过期或关键边界严重溢出仍请求安全 RESET，队满不结束会话。`ControlInputState` 跟踪成功写入状态并过滤孤立 MOVE/重复键/UP，批写逐帧过滤和更新；安全释放组合键逆序。离开/旋转/交接明确释放，关闭不重放旧操作。修改前的三个失败复现与原因见 [touch-queue-analysis.md](touch-queue-analysis.md)。控制与媒体字段大端；ADB sync v1 小端、UTF-8 路径，64 KiB 分块和 10 分钟期限，不经 Shell 拼路径。
 
-视频仍完整解码 H.264 参考链，开启 `KEY_ALLOW_FRAME_DROP`，非阻塞取出已就绪的解码输出、丢弃较旧帧，只呈现最后一帧；单轮最多丢 32 帧，避免持续有输出时不显示。没有后续输出的最后一帧立即显示。关闭日志记录队列过期/溢出/合并及视频丢帧计数，不记录事件正文。此策略处理应用队列和解码显示积压，不能撤回已经写入 TCP/USB 的数据、截断已开始的大剪贴板分块消息，不能解决所有传输/编码积压，也不等于 UDP 丢包或端到端延迟上限。[MediaCodec 文档](https://developer.android.com/reference/android/media/MediaCodec)说明解码输出可不渲染释放；不连续压缩输入则需要合适的关键帧边界。
+视频仍完整解码 H.264 参考链，开启 `KEY_ALLOW_FRAME_DROP`，非阻塞取出已就绪的解码输出、丢弃较旧帧，只呈现最后一帧；单轮最多丢 32 帧，避免持续有输出时不显示。没有后续输出的最后一帧立即显示。调试日志开启时记录队列过期/溢出/合并及视频丢帧计数，不记录事件正文。此策略处理应用队列和解码显示积压，不能撤回已经写入 TCP/USB 的数据、截断已开始的大剪贴板分块消息，不能解决所有传输/编码积压，也不等于 UDP 丢包或端到端延迟上限。[MediaCodec 文档](https://developer.android.com/reference/android/media/MediaCodec)说明解码输出可不渲染释放；不连续压缩输入则需要合适的关键帧边界。
 
 常用 scrcpy 5.0.1 控制类型：0 按键、2 触摸、5 通知栏、6 快捷设置、7 收起面板、8 获取剪贴板、9 设置剪贴板、11 远端旋转。完整协议以子模块 `ControlMessage` / reader 为准。按键消息保留 action/repeat/meta；不要丢弃实体键长按重复。
+
+0.6.1-dev `ConnectionTrace` 区分上传、能力列表、显示查询/应用、服务准备/启动、视频通道、握手、虚拟应用、解码初始化和首帧等待；每次会话 trace 关联开始/完成与耗时，失败尝试有结果。参数只含必要尺寸/格式/组件/性能项，不输出敏感内容。阶段 UI 始终可用，详细日志受开关控制；未改变服务端上传缓存或 ADB 传输策略。
+
+质量参数由全屏前台 `QualityOverlay` 以 1 秒窗口采样，`QualityStats` 的 volatile 位掩码在热路径先筛选；未选项不计数或取时钟，视频延迟 PTS 映射仅选中时分配。FPS 选中才注册 MediaCodec Surface 回调/工作线程；RTT 选中才每 3 秒开启一个有界 Shell 回显探针。后台、小窗、失去输出所有权时停采、取消回调并关闭探针；恢复全屏重新采样，不重启服务端。已有会话就绪/播放字节等正常运行状态不属于可关闭的诊断统计。
+
+各数字分别标注含义：FPS 为接收/解码/Surface 回调，码率为媒体有效载荷；视频延迟为本地入解码队列至输出（含排队），音频为 feed 调用耗时（含解码/输出等待）及 AudioTrack 缓冲/欠载，控制为实际写入次数/字节、排队与写入耗时，RTT 包含 Shell 开销。它们不代表光学帧率、远端消费率或端到端延迟；固定服务端没有编码耗时测量时显示“未上报”，组件名没取得则显示未知。不能将 Opus 输入/输出 PTS 当相同键匹配耗时。
 
 ### 6.3 Surface 所有权与生命周期
 
@@ -187,6 +203,7 @@ flowchart LR
 - 名称优先 `settings get global device_name`，回退 `ro.product.model` / Android；独立后台查询，目标或服务失效丢弃回调。标题 weight 占剩余宽度并单行末尾省略，缩放触发原生布局，不按固定字符数截断。
 - 小窗不转发本机音量键，不同步剪贴板、不采集主控麦克风，不强制主控方向。
 - 三种不透明度均默认 100%、范围 20–100%；小窗用 WindowManager 整体 alpha，视频和栏一起变化。透明度不改变点击命中区域。
+- 设置外观组名为“界面外观”；质量字体默认白色、0–100% 不透明度。保存后应用，未保存离开丢弃；“恢复默认外观”先改草稿，仍需保存。质量文字透明背景且不接收触摸，仅全屏显示。
 
 ### 6.5 麦克风与摄像头边界
 
@@ -262,6 +279,8 @@ adb -s <主控序列号> shell am instrument -w -e host <被控IP> -e port <被�
 
 其余参数：`uiStage power/rotation/settings`（每次一个）、`-e windowUi true`（原有完整远控+窗口）、`-e mainUiOnly true`、`-e connectOnly true`、`-e microphoneOnly true`；新 PIN 可配合 `-e pairPort` / `-e pin`，错误 PIN 路径使用 `-e expectPairFailure true`（不要同时设置 `mainUiOnly true`）。完整准备/安装示例见根 README，勿把临时 PIN 写进共享文档或日志。
 
+0.6.1-dev 新增 `-e featureCase draft/logging/codecDiscovery`（每次一个）和 `-e mediaCase stages/quality/touchHold`；已有分辨率专项为 `main/virtual/fallback/presets/codecs`。基础回归可加 `-e defaultMedia true -e windowUi true` 暂用默认媒体设置后恢复。touchHold 的弱网验收需要测试代理实际注入延迟并核对计数，单独运行不能当作延迟注入通过。
+
 探针可能清空目标 Logcat、写文件/生成截图、暂改旋转/长按电源/设备名、录制测试音频。结束恢复系统和 UI 偏好并停止探针/小窗。真实设备通过用户当次授权的步骤验收，不能直接照搬专用模拟器预授权命令。成功检查 `result=PASS` 与 `INSTRUMENTATION_CODE: -1`，主机 adb 正常退出不代表测试通过。
 
 ### 9.2 历史验证范围
@@ -271,6 +290,7 @@ adb -s <主控序列号> shell am instrument -w -e host <被控IP> -e port <被�
 - 0.3：5 项麦克风目标单元测试；确定性 1 kHz PCM 经生产通道让独立 UID 应用以 MIC 与 VOICE_COMMUNICATION 实际录到、停止恢复路由、停滞自动关闭和并发视频；另有当时 UI 的权限拒绝/允许与后台停止证据。
 - 0.4.0：应用 21 项及 ADB 25 项 JVM 测试通过，2 项物理 USB 测试跳过；新增四专项、原有 windowUi、主界面连接、新 PIN 实际配对和新进程 TLS 身份复用、确定性麦克风回归通过；Lint 0 错误/26 警告。
 - 0.4.1：只构建、Lint 和更新后的小窗专项；等高栏/圆角/图标/手柄/长中文标题/触控隔离/电源点击/同会话恢复及截图通过；Lint 0 错误/28 警告。未重跑其他功能，未宣称 0.4.1 所有 JVM 测试重新运行。
+- 0.6.1-dev：六项逐项专项后做最终 focused 回归；应用 62 PASS，ADB 29 PASS/2 物理 USB SKIP，Lint 0 错误/32 警告，构建和原签名覆盖安装通过。最终运行 draft/logging/codecDiscovery、stages/quality、外观设置、main/virtual/fallback 及基础 windowUi；真实模拟器控制流一次 700 ms ACK 延迟下两指长按/独立抬起通过。首次安装初始化用隔离偏好验证，没有清数据；真机游戏/硬件矩阵和四向旋转未重测，详见 TESTING.md。
 
 Android 16 控制 Android 15 实体机、Android OTG 物理链路、OEM 电源组合行为、折叠/平板策略及真实双向通话质量尚未在这些记录中验收。模拟器通过不等于这些已完成。完整原始描述保留在 TESTING.md。
 
@@ -288,7 +308,7 @@ Android 16 控制 Android 15 实体机、Android OTG 物理链路、OEM 电源�
 
 ### 10.2 日志与反馈
 
-主界面更多菜单/工具页可导出日志；Logcat 标签 `ScrcpyAndroid`。内部 `files/debug.log` 超过约 2 MiB 轮转为 `debug.previous.log`；LogProvider 通过临时 URI 分享。调试 APK 可读取：
+设置 → 诊断 →“启用调试日志”默认关闭，须保存开启后复现。应用的普通/错误诊断都受门控；有界 256 条后台队列写 Logcat 与文件，关闭会清除待写任务，历史文件保留。主界面更多菜单/工具页可导出；无日志时提示先开启。Logcat 标签 `ScrcpyAndroid`，内部 `files/debug.log` 超过约 2 MiB 轮转为 `debug.previous.log`；LogProvider 通过临时 URI 分享。第三方库/Android 系统日志不由此开关控制。服务端 INFO 保留显示 ID 等协议辅助信息，调试级别在新会话启动时选择。调试 APK 可读取：
 
 ```text
 adb -s <主控序列号> logcat -v threadtime -s ScrcpyAndroid AdbConnection AndroidRuntime

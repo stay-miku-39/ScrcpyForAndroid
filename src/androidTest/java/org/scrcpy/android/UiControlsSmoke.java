@@ -161,20 +161,23 @@ final class UiControlsSmoke {
         until(() -> "settings".equals(main.ui.page()), 5, "Settings menu did not navigate");
     }
     private static String settings(Instrumentation test, Context context, RuntimeState state) throws Exception {
+        java.util.Map<String, ?> streamSaved = StreamPreferences.get(context).getAll(), uiSaved = UiPreferences.get(context).getAll();
         SharedPreferences prefs = UiPreferences.get(context); String[] keys = {UiPreferences.BALL, UiPreferences.MENU, UiPreferences.WINDOW};
-        int[] old = new int[3]; boolean[] had = new boolean[3];
-        for (int i = 0; i < keys.length; i++) { had[i] = prefs.contains(keys[i]); old[i] = prefs.getInt(keys[i], 100); }
         MainActivity main = null; RemoteActivity remote = null, restored = null; Instrumentation.ActivityMonitor monitor = null;
         String identity = state.adb.fingerprint(); String history = context.getSharedPreferences("devices", Context.MODE_PRIVATE).getString("history", "");
         try {
+            // Keep the interactive overlay below the overflow popup. A saved
+            // large window can otherwise legitimately receive the injected tap.
+            prefs.edit().putInt("windowWidth", MainUi.dp(context,160)).putInt("windowX", MainUi.dp(context,12)).putInt("windowY", MainUi.dp(context,400)).apply();
             main = (MainActivity)test.startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             MainActivity first = main; openSettings(test, first);
             test.runOnMainSync(() -> {
                 android.widget.SeekBar ball = first.getWindow().getDecorView().findViewWithTag(UiPreferences.BALL);
-                ball.setProgress(0); check(prefs.getInt(UiPreferences.BALL, 0) == 20, "Opacity can hide controls completely");
+                ball.setProgress(0); check(ball.getProgress() == 20, "Opacity can hide controls completely");
                 ball.setProgress(35);
                 ((android.widget.SeekBar)first.getWindow().getDecorView().findViewWithTag(UiPreferences.MENU)).setProgress(55);
                 ((android.widget.SeekBar)first.getWindow().getDecorView().findViewWithTag(UiPreferences.WINDOW)).setProgress(65);
+                first.getWindow().getDecorView().findViewWithTag("saveStreamSettings").performClick();
             });
             capture(test, context, "settings");
             test.runOnMainSync(() -> { first.getOnBackPressedDispatcher().onBackPressed(); check("connect".equals(first.ui.page()), "Settings back navigation failed"); first.finish(); });
@@ -190,7 +193,7 @@ final class UiControlsSmoke {
             test.runOnMainSync(() -> check(full.menuShowing(), "Power popup disappeared before user could operate it"));
             powerItem(test, full, "唤醒屏幕");
             test.runOnMainSync(full::requestFloatingWindow);
-            until(() -> FloatingWindowService.isShowing() && full.isFinishing(), 15, "Opacity test window failed");
+            until(() -> FloatingWindowService.isShowing() && full.isFinishing() && FloatingWindowService.current().display.ownsSession(), 15, "Opacity test window failed");
             FloatingWindow floating = FloatingWindowService.current();
             check(Math.abs(floating.windowOpacity() - .65f) < .001f, "Window opacity not loaded");
             main = (MainActivity)test.startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
@@ -198,10 +201,12 @@ final class UiControlsSmoke {
             test.runOnMainSync(() -> {
                 check(((android.widget.SeekBar)second.getWindow().getDecorView().findViewWithTag(UiPreferences.BALL)).getProgress() == 35, "Saved slider value lost");
                 ((android.widget.SeekBar)second.getWindow().getDecorView().findViewWithTag(UiPreferences.WINDOW)).setProgress(40);
+                check(Math.abs(floating.windowOpacity() - .65f) < .001f, "Unsaved window opacity applied");
+                second.getWindow().getDecorView().findViewWithTag("saveStreamSettings").performClick();
             });
             until(() -> Math.abs(floating.windowOpacity() - .40f) < .001f, 5, "Active window opacity did not update");
             capture(test, context, "floating-opacity");
-            test.runOnMainSync(() -> find(second.getWindow().getDecorView(), "恢复默认透明度").performClick());
+            test.runOnMainSync(() -> { find(second.getWindow().getDecorView(), "恢复默认外观").performClick(); second.getWindow().getDecorView().findViewWithTag("saveStreamSettings").performClick(); });
             until(() -> floating.windowOpacity() == 1f, 5, "Reset did not update active window");
             for (String key : keys) check(UiPreferences.percent(prefs, key) == 100, "Reset left custom opacity");
             monitor = test.addMonitor(RemoteActivity.class.getName(), null, false);
@@ -217,7 +222,7 @@ final class UiControlsSmoke {
             if (monitor != null) test.removeMonitor(monitor);
             MainActivity endMain = main; RemoteActivity endRemote = remote, endRestored = restored;
             test.runOnMainSync(() -> { context.stopService(new Intent(context, FloatingWindowService.class)); if (endMain != null) endMain.finish(); if (endRemote != null) endRemote.finish(); if (endRestored != null) endRestored.finish(); });
-            SharedPreferences.Editor edit = prefs.edit(); for (int i = 0; i < keys.length; i++) { if (had[i]) edit.putInt(keys[i], old[i]); else edit.remove(keys[i]); } edit.apply();
+            StreamSettingsSmoke.restore(prefs, uiSaved); StreamSettingsSmoke.restore(StreamPreferences.get(context), streamSaved); DebugLog.setEnabled(prefs.getBoolean(UiPreferences.DEBUG_LOG,false));
             state.shell("am force-stop org.scrcpy.android.test");
         }
     }

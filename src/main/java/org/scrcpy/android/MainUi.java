@@ -28,6 +28,7 @@ final class MainUi {
     private Button quickRemote;
     private EditText pairHost;
     private String page = "connect";
+    private SettingsDraft settingsDraft;
 
     MainUi(MainActivity activity, SharedPreferences preferences) { a = activity; prefs = preferences; }
     static int dp(Context context, float n) { return Math.round(n * context.getResources().getDisplayMetrics().density); }
@@ -149,38 +150,57 @@ final class MainUi {
         action(card, "返回连接", () -> select("connect"), false);
     }
     private void buildSettings() {
+        SettingsDraft draft = new SettingsDraft(UiPreferences.get(a)); settingsDraft = draft;
         LinearLayout body = screen("settings", "设置", "connect"), card = card(body);
-        card.addView(new StreamSettingsView(a));
+        StreamSettingsView stream = new StreamSettingsView(a, values -> {
+            UiPreferences.parseQualityColor(draft.getString(UiPreferences.QUALITY_COLOR, "#FFFFFF"));
+            StreamPreferences.save(a, values); draft.persist();
+            DebugLog.setEnabled(draft.getBoolean(UiPreferences.DEBUG_LOG, false));
+            Toast.makeText(a, "全部设置已保存", Toast.LENGTH_SHORT).show();
+            if (draft.getBoolean("backgroundFloating", false) && !android.provider.Settings.canDrawOverlays(a))
+                a.startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:" + a.getPackageName())));
+        }); card.addView(stream);
         card = card(body);
         title(card, "后台运行");
-        SharedPreferences background = UiPreferences.get(a);
+        SharedPreferences background = draft;
         CheckBox keep = new CheckBox(a); keep.setText("后台保留远程控制连接"); keep.setChecked(background.getBoolean("backgroundKeepAlive", true)); card.addView(keep);
         CheckBox floating = new CheckBox(a); floating.setText("切换后台时，全屏自动转为小窗"); floating.setChecked(background.getBoolean("backgroundFloating", false)); floating.setEnabled(keep.isChecked()); card.addView(floating);
         keep.setOnCheckedChangeListener((view, checked) -> { background.edit().putBoolean("backgroundKeepAlive", checked).apply(); floating.setEnabled(checked); });
-        floating.setOnCheckedChangeListener((view, checked) -> {
-            background.edit().putBoolean("backgroundFloating", checked).apply();
-            if (checked && !android.provider.Settings.canDrawOverlays(a)) a.startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:" + a.getPackageName())));
-        });
+        floating.setOnCheckedChangeListener((view, checked) -> background.edit().putBoolean("backgroundFloating", checked).apply());
         note(card, "后台通过常驻通知保留 ADB 和远控。自动小窗需悬浮窗权限；未授权时保留后台连接。后台和小窗会停止本机麦克风、剪贴板同步及实体音量键转发。系统强制停止或断网仍会结束连接。");
         card = card(body);
-        title(card, "界面透明度");
-        note(card, "数值越小越透明。保留最低 20% 不透明度，避免找不到控制按钮。设置自动保存。小窗设置作用于整个窗口，包括远程画面和操作栏。");
-        SharedPreferences appearance = UiPreferences.get(a);
+        title(card, "界面外观");
+        note(card, "数值越小越透明。控制组件最低 20% 不透明度。小窗设置作用于整个窗口，包括远程画面和操作栏。所有修改须点击底部保存后生效。");
+        SharedPreferences appearance = draft;
         opacityControl(card, appearance, "全屏悬浮菜单球", UiPreferences.BALL);
         opacityControl(card, appearance, "全屏展开菜单", UiPreferences.MENU);
         opacityControl(card, appearance, "悬浮小窗", UiPreferences.WINDOW);
-        action(card, "恢复默认透明度", () -> {
-            appearance.edit().remove(UiPreferences.BALL).remove(UiPreferences.MENU).remove(UiPreferences.WINDOW).apply();
+        opacityControl(card, appearance, "质量参数字体", UiPreferences.QUALITY_OPACITY);
+        EditText qualityColor = field(card, "质量参数字体颜色（#RRGGBB）", appearance.getString(UiPreferences.QUALITY_COLOR, "#FFFFFF"), false);
+        qualityColor.setTag(UiPreferences.QUALITY_COLOR);
+        qualityColor.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            public void onTextChanged(CharSequence s, int start, int before, int count) { appearance.edit().putString(UiPreferences.QUALITY_COLOR, s.toString().trim()).apply(); }
+            public void afterTextChanged(Editable e) { }
+        });
+        action(card, "恢复默认外观", () -> {
+            appearance.edit().remove(UiPreferences.BALL).remove(UiPreferences.MENU).remove(UiPreferences.WINDOW).remove(UiPreferences.QUALITY_OPACITY).remove(UiPreferences.QUALITY_COLOR).apply();
             ViewGroup controls = (ViewGroup)pages.get("settings");
-            for (String key : new String[]{UiPreferences.BALL, UiPreferences.MENU, UiPreferences.WINDOW}) {
+            for (String key : new String[]{UiPreferences.BALL, UiPreferences.MENU, UiPreferences.WINDOW, UiPreferences.QUALITY_OPACITY}) {
                 ((SeekBar)controls.findViewWithTag(key)).setProgress(100);
             }
+            qualityColor.setText("#FFFFFF");
         }, false);
+        LinearLayout diagnostics = card(body); title(diagnostics, "诊断");
+        CheckBox logging = new CheckBox(a); logging.setText("启用调试日志"); logging.setTag(UiPreferences.DEBUG_LOG); logging.setChecked(draft.getBoolean(UiPreferences.DEBUG_LOG, false)); diagnostics.addView(logging);
+        logging.setOnCheckedChangeListener((view, value) -> draft.edit().putBoolean(UiPreferences.DEBUG_LOG, value).apply());
+        note(diagnostics, "默认关闭。保存开启后记录后续阶段、参数与错误；关闭后停止追加，历史日志仍可导出。服务端日志级别在下次投屏启动时应用。日志不包含配对码、密钥或剪贴板正文。");
+        stream.moveSaveControls(body);
     }
     private void opacityControl(LinearLayout parent, SharedPreferences appearance, String name, String key) {
         TextView value = text(name + " · 不透明度 " + UiPreferences.percent(appearance, key) + "%", 15, INK); parent.addView(value);
         SeekBar slider = new SeekBar(a); slider.setTag(key); slider.setContentDescription(name + "不透明度");
-        slider.setMin(UiPreferences.MIN_OPACITY); slider.setMax(100); slider.setProgress(UiPreferences.percent(appearance, key));
+        slider.setMin(UiPreferences.QUALITY_OPACITY.equals(key) ? 0 : UiPreferences.MIN_OPACITY); slider.setMax(100); slider.setProgress(UiPreferences.percent(appearance, key));
         parent.addView(slider, new LinearLayout.LayoutParams(-1, dp(48)));
         slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             public void onStartTrackingTouch(SeekBar bar) { }
@@ -227,6 +247,7 @@ final class MainUi {
     }
     void select(String name) {
         if (!pages.containsKey(name)) name = "connect";
+        if ("settings".equals(page) || "settings".equals(name)) rebuildSettings();
         page = name;
         if ("pair".equals(name)) pairHost.setText(a.host.getText());
         if ("scan".equals(name)) ((EditText)pages.get("scan").findViewWithTag("scanHost")).setText(a.host.getText());
@@ -242,6 +263,14 @@ final class MainUi {
         a.getWindow().getDecorView().clearFocus();
         ((android.view.inputmethod.InputMethodManager)a.getSystemService(Context.INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(content.getWindowToken(), 0);
     }
+    void discardSettingsDraft() {
+        if ("settings".equals(page)) rebuildSettings();
+    }
+    private void rebuildSettings() {
+        View previous = pages.remove("settings"); content.removeView(previous); buildSettings();
+        content.setDisplayedChild(Math.max(0, new ArrayList<>(pages.keySet()).indexOf(page)));
+    }
+    void codecCatalogReady() { ((StreamSettingsView)pages.get("settings").findViewWithTag("streamSettings")).refreshCodecLabels(); }
     boolean back() { if (Arrays.asList("pair", "settings", "scan", "shell", "files", "credential").contains(page)) { select(Arrays.asList("pair", "settings").contains(page) ? "connect" : "credential".equals(page) ? "devices" : "tools"); return true; } return false; }
     String page() { return page; }
     void message(String message) {

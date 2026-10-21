@@ -25,6 +25,11 @@ public class SmokeInstrumentation extends Instrumentation {
         Map<String, ?> streamBefore = null;
         try {
             Context context = getTargetContext(); runtime = RuntimeState.get(context);
+            if ("draft".equals(args.getString("featureCase"))) {
+                result.putString("result", SettingsDraftSmoke.run(this, context)); return;
+            }
+            if ("logging".equals(args.getString("featureCase"))) { result.putString("result", LoggingSmoke.run(this, context)); return; }
+            if ("codecDiscovery".equals(args.getString("featureCase"))) { result.putString("result", CodecDiscoverySmoke.run(this, context)); return; }
             if ("true".equals(args.getString("defaultMedia"))) {
                 streamBefore = StreamPreferences.get(context).getAll(); StreamPreferences.save(context, StreamSettings.DEFAULTS);
             }
