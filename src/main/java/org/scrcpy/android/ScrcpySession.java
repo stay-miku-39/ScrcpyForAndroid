@@ -30,7 +30,7 @@ final class ScrcpySession implements AutoCloseable {
     private volatile Thread qualityProbeThread;
     private volatile long trackStartAudioBytes;
     volatile String actualAudioDecoder = "", actualVideoEncoder = "", actualAudioEncoder = "";
-    volatile String activeBackend = "", effectiveVideo = "h264", effectiveAudio = "raw";
+    volatile String activeBackend = "", effectiveVideo = "h264", effectiveAudio = "raw", effectiveRateMode = "auto";
     volatile int displayWidth, displayHeight;
     volatile int remoteDisplayId = -1;
     private final List<String> notices = new CopyOnWriteArrayList<>();
@@ -91,7 +91,7 @@ final class ScrcpySession implements AutoCloseable {
         remoteFiles.add(remoteJar);
         DebugLog.write("connect settings target=" + device.target + " resolution=" + settings.resolution + " backend=" + settings.backend
                 + " local=" + settings.localWidth + "x" + settings.localHeight + " custom=" + settings.values.get("customWidth") + "x" + settings.values.get("customHeight")
-                + " maxSize=" + settings.maxSize + " fps=" + settings.fps + " video=" + settings.videoCodec + " videoBitRate=" + settings.videoBitRate
+                + " maxSize=" + settings.maxSize + " fps=" + settings.fps + " video=" + settings.videoCodec + " videoBitRate=" + settings.videoBitRate + " rateMode=" + settings.videoBitRateMode
                 + " audioEnabled=" + audioEnabled + " audio=" + settings.audioCodec + " audioBitRate=" + settings.audioBitRate
                 + " videoEncoder=" + settings.videoEncoder + " videoDecoder=" + settings.videoDecoder
                 + " audioEncoder=" + settings.audioEncoder + " audioDecoder=" + settings.audioDecoder);
@@ -126,8 +126,8 @@ final class ScrcpySession implements AutoCloseable {
                         if (current.ready || closed.get()) throw error;
                         if (!safeVideo || !safeAudio) {
                             if ((safeVideo || ("h264".equals(settings.videoCodec) && settings.videoEncoder.isEmpty() && settings.videoDecoder.isEmpty()))
-                                    && (safeAudio || ("raw".equals(settings.audioCodec)))) throw error;
-                            safeVideo = safeAudio = true; notice("音视频启动失败，使用 H.264 / PCM 重试：" + error.getMessage());
+                                    && (safeAudio || ("raw".equals(settings.audioCodec))) && !"cbr".equals(settings.videoBitRateMode)) throw error;
+                            safeVideo = safeAudio = true; notice("音视频启动失败，使用 H.264 / PCM 和自动码率模式重试：" + error.getMessage());
                         } else throw error;
                     } finally { stopAttempt(current); }
                 }
@@ -153,6 +153,7 @@ final class ScrcpySession implements AutoCloseable {
                 + " max_size=" + settings.maxSize + " max_fps=" + settings.fps + " video_bit_rate=" + settings.videoBitRate
                 + " audio=" + audioEnabled + " audio_codec=" + current.audioCodec + " audio_bit_rate=" + settings.audioBitRate
                 + " control=true cleanup=true clipboard_autosync=true log_level=" + (DebugLog.isEnabled() ? "debug" : "info");
+        command += settings.videoRateOptions(safeVideo);
         if (!safeVideo && !settings.videoEncoder.isEmpty()) command += " video_encoder=" + settings.videoEncoder;
         if (!safeAudio && !"raw".equals(current.audioCodec) && !settings.audioEncoder.isEmpty()) command += " audio_encoder=" + settings.audioEncoder;
         if ("virtual".equals(route)) command += " new_display=" + requested[0] + "x" + requested[1] + " vd_destroy_content=false";
@@ -165,7 +166,7 @@ final class ScrcpySession implements AutoCloseable {
                 BufferedReader reader = new BufferedReader(new InputStreamReader(shell.openInputStream(), StandardCharsets.UTF_8)); String line;
                 while ((line = reader.readLine()) != null) {
                     DebugLog.write("server " + line);
-                    if (quality.enabled(QualityStats.CODECS)) {
+                    {
                         java.util.regex.Matcher encoder = java.util.regex.Pattern.compile("Using (video|audio) encoder: '([^']+)'").matcher(line);
                         if (encoder.find()) { if ("video".equals(encoder.group(1))) actualVideoEncoder = encoder.group(2); else actualAudioEncoder = encoder.group(2); }
                     }
@@ -206,6 +207,7 @@ final class ScrcpySession implements AutoCloseable {
             if ("virtual".equals(route)) connectionTrace.call("virtual-app", "正在虚拟显示中启动应用…", "requested=" + requested[0] + "x" + requested[1], () -> { byte[] start = ControlProtocol.startApp(virtualApp()); control.write(start, 0, start.length); return null; });
             if (audio != null) startAudio(audio, current); else current.audioReady = true;
             activeBackend = route; effectiveVideo = current.videoCodec; effectiveAudio = current.audioCodec;
+            effectiveRateMode = safeVideo ? "auto" : settings.videoBitRateMode;
             DebugLog.write("scrcpy connected device=" + deviceName);
             handshakePhase.success();
             } finally { handshakePhase.close(); }
@@ -392,7 +394,8 @@ final class ScrcpySession implements AutoCloseable {
     String qualityCodecDescription() {
         VideoDecoder current = decoder;
         return width + "×" + height + " · " + activeBackend + "\n视频 " + effectiveVideo + " · 编码 " + (actualVideoEncoder.isEmpty() ? "自动（未上报）" : actualVideoEncoder)
-                + "\n解码 " + (current == null ? "等待" : current.description) + "\n音频 " + (audioEnabled ? effectiveAudio + " · " + (actualAudioDecoder.isEmpty() ? "PCM 直通/等待" : actualAudioDecoder) : "关闭");
+                + "\n解码 " + (current == null ? "等待" : current.description) + "\n目标 " + settings.videoBitRate/1e6 + " Mbps · " + settings.fps + " fps 上限 · " + effectiveRateMode
+                + "\n音频 " + (audioEnabled ? effectiveAudio + " · " + (actualAudioDecoder.isEmpty() ? "PCM 直通/等待" : actualAudioDecoder) : "关闭");
     }
     int qualityControlDepth() { return controls.size(); }
     String qualityAudioBuffer() {

@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicLong;
 final class VideoDecoder implements AutoCloseable {
     private final MediaCodec codec;
     private final QualityStats quality;
+    private final String mime;
     private final Object trackingLock = new Object();
     private android.os.HandlerThread frameCallbacks;
     volatile String description;
@@ -19,17 +20,14 @@ final class VideoDecoder implements AutoCloseable {
     private long droppedFrames;
 
     VideoDecoder(Surface surface, int width, int height, String mime, String name, QualityStats quality) throws IOException {
-        this.quality = quality;
-        codec = createCodec(mime, name);
-        description = codec.getName();
-        try {
-            MediaFormat format = MediaFormat.createVideoFormat(mime, width, height);
-            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 4 * 1024 * 1024);
-            format.setInteger(MediaFormat.KEY_PRIORITY, 0);
-            format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
-            format.setInteger(MediaFormat.KEY_ALLOW_FRAME_DROP, 1);
-            codec.configure(format, surface, null, 0); codec.start();
-        } catch (RuntimeException e) { codec.release(); throw e; }
+        this.quality = quality; this.mime = mime;
+        MediaFormat format = MediaFormat.createVideoFormat(mime, width, height);
+        format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 4 * 1024 * 1024);
+        format.setInteger(MediaFormat.KEY_PRIORITY, 0);
+        format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
+        format.setInteger(MediaFormat.KEY_ALLOW_FRAME_DROP, 1);
+        codec = configureCodec(surface, format, mime, name, width, height);
+        description = describeCodec();
         updateQuality();
         drain = new Thread(() -> {
             MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
@@ -55,7 +53,7 @@ final class VideoDecoder implements AutoCloseable {
         synchronized (trackingLock) {
             if (!running) return;
             try {
-                if (quality.enabled(QualityStats.CODECS)) description = codec.getName() + (codec.getCodecInfo().isHardwareAccelerated() ? "（硬件）" : "（软件）");
+                if (quality.enabled(QualityStats.CODECS)) description = describeCodec();
                 if (quality.enabled(QualityStats.FPS) && frameCallbacks == null) {
                     frameCallbacks = new android.os.HandlerThread("quality-frame-callback"); frameCallbacks.start();
                     codec.setOnFrameRenderedListener((c, pts, time) -> quality.framePresented(), new android.os.Handler(frameCallbacks.getLooper()));
@@ -71,6 +69,38 @@ final class VideoDecoder implements AutoCloseable {
             for (String type : info.getSupportedTypes()) if (mime.equalsIgnoreCase(type)) return true;
         }
         return false;
+    }
+    private String describeCodec() {
+        MediaCodecInfo info=codec.getCodecInfo();
+        boolean lowLatency=info.getCapabilitiesForType(mime)
+                .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency);
+        return codec.getName() + (info.isHardwareAccelerated() ? "（硬件）" : "（软件）")
+                + (lowLatency ? " · 支持低延迟" : " · 未声明低延迟能力");
+    }
+    private static MediaCodec configureCodec(Surface surface, MediaFormat format, String mime, String name, int width, int height) throws IOException {
+        if (name.isEmpty()) {
+            MediaFormat selection=MediaFormat.createVideoFormat(mime,width,height);
+            selection.setFeatureEnabled(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency,true);
+            for (MediaCodecInfo info:new MediaCodecList(MediaCodecList.REGULAR_CODECS).getCodecInfos()) {
+                if (info.isEncoder() || !info.isHardwareAccelerated() || info.isAlias() || info.getName().startsWith("c2.goldfish.")) continue;
+                boolean typeSupported=false;
+                for (String type:info.getSupportedTypes()) if (mime.equalsIgnoreCase(type)) { typeSupported=true; break; }
+                if (!typeSupported) continue;
+                MediaCodec candidate=null;
+                try {
+                    MediaCodecInfo.CodecCapabilities caps=info.getCapabilitiesForType(mime);
+                    if (!caps.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency) || !caps.isFormatSupported(selection)) continue;
+                    candidate=MediaCodec.createByCodecName(info.getName()); candidate.configure(format,surface,null,0); candidate.start();
+                    DebugLog.write("video low-latency hardware decoder="+info.getName()); return candidate;
+                } catch (IOException | RuntimeException error) {
+                    if (candidate!=null) { try { candidate.release(); } catch (RuntimeException ignored) { } }
+                    DebugLog.write("low-latency decoder candidate unavailable="+info.getName());
+                }
+            }
+        }
+        MediaCodec fallback=createCodec(mime,name);
+        try { fallback.configure(format,surface,null,0); fallback.start(); return fallback; }
+        catch (RuntimeException error) { fallback.release(); throw error; }
     }
     private static MediaCodec createCodec(String mime, String name) throws IOException {
         MediaCodec preferred = name.isEmpty() ? MediaCodec.createDecoderByType(mime) : MediaCodec.createByCodecName(name);

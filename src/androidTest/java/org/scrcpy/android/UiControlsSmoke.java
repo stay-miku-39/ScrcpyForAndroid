@@ -62,10 +62,13 @@ final class UiControlsSmoke {
         prepareTarget(state);
         if ("settings".equals(stage)) return settings(test, context, state);
         SharedPreferences appearance = UiPreferences.get(context);
+        boolean hadLogging=appearance.contains(UiPreferences.DEBUG_LOG),oldLogging=appearance.getBoolean(UiPreferences.DEBUG_LOG,false);
+        if ("power".equals(stage)) { appearance.edit().putBoolean(UiPreferences.DEBUG_LOG,true).apply(); DebugLog.setEnabled(true); }
         String[] windowKeys = {"windowX", "windowY", "windowWidth", UiPreferences.WINDOW};
         int[] windowValues = new int[windowKeys.length]; boolean[] windowHad = new boolean[windowKeys.length];
         for (int i = 0; i < windowKeys.length; i++) { windowHad[i] = appearance.contains(windowKeys[i]); windowValues[i] = appearance.getInt(windowKeys[i], 0); }
         String oldName = null;
+        if ("dismiss".equals(stage)) appearance.edit().putInt("windowWidth", MainUi.dp(context,220)).putInt("windowX", MainUi.dp(context,100)).putInt("windowY", MainUi.dp(context,180)).apply();
         if ("window".equals(stage)) {
             appearance.edit().putInt("windowWidth", MainUi.dp(context, 220)).putInt(UiPreferences.WINDOW, 100).apply();
             oldName = state.shell("settings get global device_name").trim();
@@ -77,6 +80,7 @@ final class UiControlsSmoke {
         try {
             until(() -> remote.session != null && remote.session.renderedFrames() >= 3, 30, "Video did not start");
             if ("window".equals(stage)) return window(test, context, state, remote);
+            if ("dismiss".equals(stage)) return dismiss(test, context, state, remote);
             if ("rotation".equals(stage)) return rotation(test, context, state, remote);
             if (!"power".equals(stage)) throw new IllegalArgumentException("Unknown UI stage: " + stage);
             longPress = state.shell("settings get global power_button_long_press").trim();
@@ -127,6 +131,7 @@ final class UiControlsSmoke {
             SharedPreferences.Editor edit = appearance.edit();
             for (int i = 0; i < windowKeys.length; i++) { if (windowHad[i]) edit.putInt(windowKeys[i], windowValues[i]); else edit.remove(windowKeys[i]); } edit.apply();
             if (oldName != null) { if ("null".equals(oldName)) state.shell("settings delete global device_name"); else putDeviceName(state, oldName); }
+            if ("power".equals(stage)) { if(hadLogging) appearance.edit().putBoolean(UiPreferences.DEBUG_LOG,oldLogging).apply(); else appearance.edit().remove(UiPreferences.DEBUG_LOG).apply(); DebugLog.setEnabled(oldLogging); }
             state.shell("input keyevent KEYCODE_WAKEUP; input keyevent KEYCODE_BACK; am force-stop org.scrcpy.android.test");
         }
     }
@@ -291,6 +296,39 @@ final class UiControlsSmoke {
             MotionEvent event = MotionEvent.obtain(now, SystemClock.uptimeMillis(), action, 12 + (action == MotionEvent.ACTION_DOWN ? 0 : dx), 20 + (action == MotionEvent.ACTION_DOWN ? 0 : dy), 0);
             view.dispatchTouchEvent(event); event.recycle();
         }
+    }
+    static void screenDrag(Instrumentation test, View handle, float dx, float dy, int duration, boolean cancel) throws Exception {
+        int[] location = new int[2]; test.runOnMainSync(() -> handle.getLocationOnScreen(location));
+        float x = location[0] + handle.getWidth()/2f, y = location[1] + handle.getHeight()/2f;
+        long down = SystemClock.uptimeMillis(); int steps = 12;
+        for (int i=0; i<=steps; i++) {
+            int action = i==0 ? MotionEvent.ACTION_DOWN : i==steps ? (cancel ? MotionEvent.ACTION_CANCEL : MotionEvent.ACTION_UP) : MotionEvent.ACTION_MOVE;
+            MotionEvent event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x+dx*i/steps, y+dy*i/steps, 0);
+            event.setSource(InputDevice.SOURCE_TOUCHSCREEN); test.getUiAutomation().injectInputEvent(event, false); event.recycle();
+            if (i<steps) Thread.sleep(Math.max(1,duration/steps));
+        }
+        test.waitForIdleSync(); Thread.sleep(250);
+    }
+    private static String dismiss(Instrumentation test, Context context, RuntimeState state, RemoteActivity remote) throws Exception {
+        ScrcpySession session = remote.session;
+        test.runOnMainSync(remote::requestFloatingWindow);
+        until(() -> FloatingWindowService.isShowing() && remote.isFinishing(),15,"Dismiss window not attached");
+        FloatingWindow floating = FloatingWindowService.current(); Thread.sleep(1200);
+        String touches = state.shell("logcat -d -s ScrcpyProbe:I '*:S'");
+        Rect initial = floating.windowBounds(); screenDrag(test, floating.deviceLabel, 50, 70, 400, false);
+        check(FloatingWindowService.isShowing() && !initial.equals(floating.windowBounds()),"Ordinary move closed or failed");
+        screenDrag(test, floating.deviceLabel, -floating.windowBounds().left-100, 0, 400, true);
+        check(FloatingWindowService.isShowing() && floating.windowBounds().left>=0,"Cancelled drag closed or stranded window");
+        // Deliberately slow edge crossing snaps back; a quick outward throw closes it.
+        screenDrag(test, floating.deviceLabel, -floating.windowBounds().left-60, 0, 700, false);
+        check(FloatingWindowService.isShowing() && floating.windowBounds().left>=0,"Slow edge move closed window");
+        screenDrag(test, floating.deviceLabel, MainUi.dp(context,160), 0, 500, false);
+        int[] point = new int[2]; test.runOnMainSync(() -> floating.deviceLabel.getLocationOnScreen(point));
+        screenDrag(test, floating.deviceLabel, 2-point[0]-floating.deviceLabel.getWidth()/2f, 0, 60, false);
+        until(() -> !FloatingWindowService.isShowing() && session.isClosed(),10,"Outward throw did not close owned session");
+        check(state.current().connected && state.shell("echo retained").contains("retained"),"Dismiss disconnected ADB");
+        check(touches.equals(state.shell("logcat -d -s ScrcpyProbe:I '*:S'")),"Window drag leaked remote touches");
+        return "PASS ordinary move, cancel, slow-edge snap, real outward fling closes session with ADB retained, no remote touches";
     }
     private static String window(Instrumentation test, Context context, RuntimeState state, RemoteActivity remote) throws Exception {
         ScrcpySession original = remote.session; long before = original.renderedFrames();

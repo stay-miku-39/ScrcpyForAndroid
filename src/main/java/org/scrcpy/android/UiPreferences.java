@@ -8,6 +8,7 @@ final class UiPreferences {
     static final String BALL = "ballOpacity", MENU = "menuOpacity", WINDOW = "windowOpacity";
     static final String QUALITY_ENABLED = "qualityEnabled", QUALITY_ITEMS = "qualityItems", QUALITY_COLOR = "qualityTextColor", QUALITY_OPACITY = "qualityTextOpacity";
     static final String DEBUG_LOG = "debugLogging";
+    static final String QUALITY_X = "qualityX", QUALITY_Y = "qualityY";
     static final int MIN_OPACITY = 20;
     static SharedPreferences get(Context context) { return context.getSharedPreferences("remote-ui", Context.MODE_PRIVATE); }
     static float opacity(Context context, String key) { return percent(get(context), key) / 100f; }

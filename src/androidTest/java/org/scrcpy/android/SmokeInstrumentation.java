@@ -25,6 +25,7 @@ public class SmokeInstrumentation extends Instrumentation {
         Map<String, ?> streamBefore = null;
         try {
             Context context = getTargetContext(); runtime = RuntimeState.get(context);
+            if ("colorPicker".equals(args.getString("featureCase"))) { result.putString("result", ColorPickerSmoke.run(this,context)); return; }
             if ("draft".equals(args.getString("featureCase"))) {
                 result.putString("result", SettingsDraftSmoke.run(this, context)); return;
             }

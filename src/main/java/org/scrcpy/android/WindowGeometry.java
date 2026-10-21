@@ -2,6 +2,16 @@ package org.scrcpy.android;
 
 /** Pure window sizing. RemoteDisplay always fits video without stretching. */
 final class WindowGeometry {
+    static boolean dismiss(int x, int y, int width, int height, int screenWidth, int screenHeight,
+            float vx, float vy, float minVelocity, int edge) {
+        float cx = x + width / 2f, cy = y + height / 2f;
+        if (cx < 0 || cx > screenWidth || cy < 0 || cy > screenHeight) return true;
+        // Fling only when already crossing that edge, never from the middle of the screen.
+        return (x < -edge && vx < -minVelocity && cx + vx * .18f < 0)
+                || (x + width > screenWidth + edge && vx > minVelocity && cx + vx * .18f > screenWidth)
+                || (y < -edge && vy < -minVelocity && cy + vy * .18f < 0)
+                || (y + height > screenHeight + edge && vy > minVelocity && cy + vy * .18f > screenHeight);
+    }
     static int[] fit(int requested, int videoWidth, int videoHeight, int minWidth, int maxWidth, int maxHeight, int border, int chrome) {
         maxWidth = Math.max(border + 1, maxWidth); maxHeight = Math.max(1, maxHeight);
         minWidth = Math.min(Math.max(border + 1, minWidth), maxWidth);

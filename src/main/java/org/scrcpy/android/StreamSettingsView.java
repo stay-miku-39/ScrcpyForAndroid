@@ -31,7 +31,12 @@ final class StreamSettingsView extends LinearLayout {
         label("留空时尝试系统默认桌面，再尝试系统设置。虚拟屏中的任务结束后会尝试移回主屏。", false);
         field("maxSize", "视频传输最大边（px，0 不限；默认 1600）", saved, true);
         select("videoCodec", "视频编码格式", StreamSettings.VIDEOS, new String[]{"H.264（兼容优先）", "H.265 / HEVC", "AV1", "VP8", "VP9"}, saved);
-        field("videoBitRate", "视频码率（bit/s，默认 6000000）", saved, true); field("fps", "最高帧率（1–240，默认 60）", saved, true);
+        field("videoBitRate", "视频目标码率（bit/s，6000000 = 6 Mbps）", saved, true);
+        Button desktopRate = new Button(context); desktopRate.setText("使用桌面 scrcpy 默认码率 · 8 Mbps"); desktopRate.setAllCaps(false);
+        desktopRate.setOnClickListener(v -> fields.get("videoBitRate").setText("8000000")); addView(desktopRate);
+        select("videoBitRateMode", "视频码率控制", new String[]{"auto","cbr"}, new String[]{"自动（与桌面 scrcpy 默认一致）","恒定码率 CBR（请求抑制码率突发）"}, saved);
+        label("目标码率不是瞬时上限。对比桌面端时须使用相同目标码率、尺寸和编码器。CBR 需远端编码器支持，不支持时回退自动；高目标值仍会增加带宽与解码负担。",false);
+        field("fps", "最高帧率（1–240，默认 60）", saved, true);
         select("audioCodec", "音频编码格式", StreamSettings.AUDIOS, new String[]{"PCM（无压缩）", "AAC", "Opus", "FLAC（无损）"}, saved);
         field("audioBitRate", "音频码率（bit/s，16000–512000）", saved, true);
         label("PCM 不使用码率或编解码组件设置；FLAC 的实际码率取决于内容。声音开关仍在连接页。组件不可用会提示并回退 H.264 / PCM。", false);

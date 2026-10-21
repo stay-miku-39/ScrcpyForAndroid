@@ -54,7 +54,7 @@ final class FloatingWindow extends ContextWrapper implements RemoteDisplay.Event
         deviceLabel = new TextView(appearance); deviceLabel.setText("Android"); deviceLabel.setTextSize(12); deviceLabel.setGravity(Gravity.CENTER_VERTICAL);
         deviceLabel.setSingleLine(true); deviceLabel.setEllipsize(android.text.TextUtils.TruncateAt.END);
         deviceLabel.setMinWidth(0); deviceLabel.setPadding(dp(10), 0, dp(4), 0); deviceLabel.setTextColor(Color.WHITE);
-        deviceLabel.setContentDescription("Android，拖动移动小窗");
+        deviceLabel.setContentDescription("Android，拖动移动小窗，向屏幕边缘甩出关闭");
         header = new LinearLayout(appearance); header.setGravity(Gravity.CENTER_VERTICAL); header.setBackgroundColor(0xFF182841);
         // Weight 1 + zero width leaves exactly the space not occupied by the
         // power icon. TextView recomputes end ellipsis on every window resize.
@@ -77,7 +77,7 @@ final class FloatingWindow extends ContextWrapper implements RemoteDisplay.Event
         installResize(leftResizeGrip, true); installResize(rightResizeGrip, false);
         position = new WindowManager.LayoutParams(dp(220), dp(420), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                        | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON, PixelFormat.TRANSLUCENT);
+                        | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, PixelFormat.TRANSLUCENT);
         position.gravity = Gravity.TOP | Gravity.LEFT;
         position.alpha = UiPreferences.opacity(this, UiPreferences.WINDOW);
         position.setTitle("Scrcpy remote window " + runtime.target);
@@ -86,14 +86,35 @@ final class FloatingWindow extends ContextWrapper implements RemoteDisplay.Event
         position.x += dp(28) * service.windowCount();
         fitWindow();
         deviceLabel.setOnTouchListener(new View.OnTouchListener() {
-            float x, y; int startX, startY;
+            float x, y; int startX, startY; boolean dragging; VelocityTracker velocity;
             public boolean onTouch(View v, MotionEvent e) {
-                if (e.getActionMasked() == MotionEvent.ACTION_DOWN) { x = e.getRawX(); y = e.getRawY(); startX = position.x; startY = position.y; display.releaseTouches(); }
-                else if (e.getActionMasked() == MotionEvent.ACTION_MOVE) { position.x = startX + (int)(e.getRawX()-x); position.y = startY + (int)(e.getRawY()-y); clampPosition(); update(); }
-                else if (e.getActionMasked() == MotionEvent.ACTION_UP) { save(); v.performClick(); }
+                int action = e.getActionMasked();
+                if (action == MotionEvent.ACTION_DOWN) {
+                    x = e.getRawX(); y = e.getRawY(); startX = position.x; startY = position.y; dragging = false;
+                    if (velocity != null) velocity.recycle(); velocity = VelocityTracker.obtain(); display.releaseTouches(); powerKeys.release();
+                }
+                // Window-relative coordinates move with the window. Track screen coordinates instead.
+                if (velocity != null) {
+                    MotionEvent screen = MotionEvent.obtain(e); screen.offsetLocation(e.getRawX() - e.getX(), e.getRawY() - e.getY());
+                    velocity.addMovement(screen); screen.recycle();
+                }
+                if (action == MotionEvent.ACTION_MOVE) {
+                    if (Math.hypot(e.getRawX()-x, e.getRawY()-y) > ViewConfiguration.get(FloatingWindow.this).getScaledTouchSlop()) dragging = true;
+                    if (dragging) { position.x = startX + Math.round(e.getRawX()-x); position.y = startY + Math.round(e.getRawY()-y); update(); }
+                } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    if (velocity != null) velocity.computeCurrentVelocity(1000, dp(8000));
+                    Rect area = bounds();
+                    boolean dismiss = action == MotionEvent.ACTION_UP && dragging && velocity != null
+                            && WindowGeometry.dismiss(position.x, position.y, position.width, position.height, area.width(), area.height(),
+                            velocity.getXVelocity(), velocity.getYVelocity(), dp(1000), dp(48));
+                    if (velocity != null) { velocity.recycle(); velocity = null; }
+                    if (dismiss) { service.closeWindow(runtime.target); return true; }
+                    clampPosition(); update(); save(); if (!dragging && action == MotionEvent.ACTION_UP) v.performClick();
+                }
                 return true;
             }
         });
+        deviceLabel.setTooltipText("拖动移动，向屏幕边缘甩出可关闭小窗");
         windows.addView(window, position); loadDeviceName(); DebugLog.write("floating window added");
     }
     private MaterialButton iconButton(Context context, int drawable, String description) {
@@ -121,7 +142,7 @@ final class FloatingWindow extends ContextWrapper implements RemoteDisplay.Event
             String label = name;
             new Handler(getMainLooper()).post(() -> {
                 if (window == null || !runtime.connected || service.window(runtime.target) != this) return;
-                deviceLabel.setText(label); deviceLabel.setContentDescription(label + "，拖动移动小窗");
+                deviceLabel.setText(label); deviceLabel.setContentDescription(label + "，拖动移动小窗，向屏幕边缘甩出关闭");
                 DebugLog.write("floating device name loaded chars=" + label.length());
             });
         }, "floating-device-name").start();

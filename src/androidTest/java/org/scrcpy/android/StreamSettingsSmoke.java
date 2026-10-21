@@ -33,6 +33,9 @@ final class StreamSettingsSmoke {
             else if ("presets".equals(stage)) smoke.presets();
             else if ("stages".equals(stage)) smoke.stages();
             else if ("quality".equals(stage)) smoke.quality();
+            else if ("position".equals(stage)) smoke.position();
+            else if ("performance".equals(stage)) smoke.performance();
+            else if ("rateControl".equals(stage)) smoke.rateControl();
             else if ("touchHold".equals(stage)) smoke.touchHold();
             else throw new IllegalArgumentException("Unknown mediaCase: " + stage);
             check(identity.equals(device.adb.fingerprint()), "Media settings changed ADB identity");
@@ -76,6 +79,7 @@ final class StreamSettingsSmoke {
     }
     private void quality() throws Exception {
         configure("audioCodec", "opus");
+        UiPreferences.get(context).edit().remove(UiPreferences.QUALITY_X).remove(UiPreferences.QUALITY_Y).apply();
         UiPreferences.get(context).edit().putBoolean(UiPreferences.QUALITY_ENABLED, false).putInt(UiPreferences.QUALITY_ITEMS, QualityStats.VIDEO_RATE).apply();
         ScrcpySession current = start(true);
         check(current.quality.mask == 0 && activity.qualityOverlay.getVisibility() == View.GONE, "Disabled panel still collects statistics");
@@ -147,6 +151,107 @@ final class StreamSettingsSmoke {
         } finally { test.removeMonitor(monitor); }
         close();
     }
+    private void position() throws Exception {
+        configure(); SharedPreferences prefs=UiPreferences.get(context);
+        prefs.edit().putBoolean(UiPreferences.QUALITY_ENABLED,true).putInt(UiPreferences.QUALITY_ITEMS,QualityStats.VIDEO_RATE)
+                .remove(UiPreferences.QUALITY_X).remove(UiPreferences.QUALITY_Y).apply();
+        ScrcpySession current=start(false); Thread.sleep(1000);
+        until(() -> activity.qualityOverlay.getText().toString().contains("Mbps"),5,"Quality panel not ready");
+        device.shell("logcat -c");
+        test.runOnMainSync(() -> {
+            activity.showQualityMenu(); View item=UiControlsSmoke.find(activity.menuContent(),"自定义参数位置");
+            check(item!=null,"Position menu entry missing"); item.performClick();
+        });
+        float x=activity.qualityOverlay.getX(), y=activity.qualityOverlay.getY();
+        UiControlsSmoke.screenDrag(test,activity.qualityOverlay,MainUi.dp(context,40),MainUi.dp(context,240),400,false);
+        check(activity.qualityOverlay.getY()>y+MainUi.dp(context,60),"Quality panel did not follow real drag");
+        check(!prefs.contains(UiPreferences.QUALITY_Y),"Unsaved position persisted");
+        test.runOnMainSync(() -> UiControlsSmoke.find(activity.getWindow().getDecorView(),"完成定位").performClick());
+        check(prefs.getFloat(UiPreferences.QUALITY_Y,0)>.1f && !activity.qualityOverlay.isClickable(),"Position not saved or still intercepting");
+        float savedX=activity.qualityOverlay.getX(),savedY=activity.qualityOverlay.getY();
+        test.runOnMainSync(activity::beginQualityPosition);
+        UiControlsSmoke.screenDrag(test,activity.qualityOverlay,-MainUi.dp(context,30),-MainUi.dp(context,80),400,false);
+        test.runOnMainSync(() -> UiControlsSmoke.find(activity.getWindow().getDecorView(),"取消定位").performClick());
+        check(Math.abs(activity.qualityOverlay.getY()-savedY)<2,"Cancel did not restore saved location");
+        check(!device.shell("logcat -d -s ScrcpyProbe:I '*:S'").contains("touch action="),"Position drag leaked remote touch");
+        MainActivity main=(MainActivity)test.startActivitySync(new Intent(context,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        test.runOnMainSync(main::finish);
+        until(() -> activity.hasWindowFocus() && activity.display.ownsSession(),12,"Position foreground restore failed");
+        until(() -> activity.session==current && activity.qualityOverlay.getText().toString().contains("Mbps")
+                && Math.abs(activity.qualityOverlay.getY()-savedY)<2,8,"Saved location or session lost on resume");
+        test.runOnMainSync(() -> {
+            View root=(View)activity.qualityOverlay.getParent();
+            float tx=activity.qualityOverlay.getX()+20,ty=activity.qualityOverlay.getY()+20; long down=SystemClock.uptimeMillis();
+            for(int action:new int[]{MotionEvent.ACTION_DOWN,MotionEvent.ACTION_UP}) {
+                MotionEvent event=MotionEvent.obtain(down,SystemClock.uptimeMillis(),action,tx,ty,0); root.dispatchTouchEvent(event); event.recycle();
+            }
+        });
+        until(() -> device.shell("logcat -d -s ScrcpyProbe:I '*:S'").contains("touch action=1"),5,"Positioned overlay did not pass remote touches");
+        test.runOnMainSync(() -> { activity.setAutoRotate(false); activity.setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE); });
+        until(() -> activity.getWindow().getDecorView().getWidth()>activity.getWindow().getDecorView().getHeight(),10,"Local landscape did not settle");
+        test.waitForIdleSync(); Thread.sleep(300);
+        check(activity.qualityOverlay.getX()>=0 && activity.qualityOverlay.getY()>=0
+                && activity.qualityOverlay.getX()+activity.qualityOverlay.getWidth()<=((View)activity.qualityOverlay.getParent()).getWidth()+1
+                && activity.qualityOverlay.getY()+activity.qualityOverlay.getHeight()<=((View)activity.qualityOverlay.getParent()).getHeight()+1,"Rotated quality position left screen");
+        check(activity.session==current,"Position rotation replaced session");
+        capture("quality-position-landscape");
+        test.runOnMainSync(() -> activity.setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT));
+        until(() -> activity.getWindow().getDecorView().getWidth()<activity.getWindow().getDecorView().getHeight(),10,"Local portrait did not settle");
+        test.runOnMainSync(() -> {
+            prefs.edit().putBoolean(UiPreferences.QUALITY_ENABLED,false).putInt(UiPreferences.QUALITY_OPACITY,0).apply();
+            activity.beginQualityPosition();
+            check(activity.qualityOverlay.getVisibility()==View.VISIBLE && activity.qualityOverlay.getAlpha()==1,"Hidden panel cannot be positioned");
+            UiControlsSmoke.find(activity.getWindow().getDecorView(),"取消定位").performClick();
+        });
+        check(current.quality.mask==0 && activity.qualityOverlay.getVisibility()==View.GONE,"Position preview enabled disabled stats");
+        close();
+    }
+    private void performance() throws Exception {
+        SharedPreferences prefs=UiPreferences.get(context);
+        prefs.edit().putBoolean(UiPreferences.QUALITY_ENABLED,true).putInt(UiPreferences.QUALITY_ITEMS,
+                QualityStats.FPS|QualityStats.VIDEO_RATE|QualityStats.VIDEO_DELAY|QualityStats.INPUT_WAIT|QualityStats.CODECS)
+                .putBoolean(UiPreferences.DEBUG_LOG,true).apply(); DebugLog.setEnabled(true);
+        File directory=context.getExternalFilesDir("performance-smoke");
+        try (PrintWriter out=new PrintWriter(new File(directory,"android.csv"))) {
+            out.println("target_bps,sample,received_fps,decoded_fps,video_mbps,packets_s,decode_queue_ms,input_wait_ms");
+            for (String rate:new String[]{"8000000","100000000"}) {
+                configure("customWidth","1080","customHeight","2400","maxSize","0","fps","120","videoBitRate",rate);
+                ScrcpySession session=start(false);
+                check(session.width==1080 && session.height==2400,"Performance case unexpectedly scaled");
+                device.shell("input keyevent KEYCODE_HOME"); Thread.sleep(800);
+                Throwable[] failure={null};
+                Thread gestures=new Thread(() -> {
+                    try { device.shell("for i in 1 2 3 4 5 6 7 8; do input swipe 540 2100 540 400 250; input swipe 540 500 540 2100 250; cmd statusbar expand-notifications; sleep 0.2; cmd statusbar collapse; done"); }
+                    catch(Throwable error) { failure[0]=error; }
+                },"performance-test-gestures"); gestures.start();
+                int active=0;
+                for(int i=0;i<16;i++) {
+                    Thread.sleep(1100); QualityStats.Sample sample=activity.qualityOverlay.lastSample;
+                    check(sample!=null,"Performance sample absent");
+                    out.printf(Locale.ROOT,"%s,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f%n",rate,i,sample.receivedFps,sample.decodedFps,sample.videoMbps,sample.videoPps,sample.videoDelayMs,sample.inputWaitMs); out.flush();
+                    if (sample.receivedFps>0) active++;
+                }
+                gestures.join(30000); check(!gestures.isAlive() && failure[0]==null,"Performance gestures failed");
+                check(active>=10 && !session.isClosed(),"Performance session stalled"); close();
+            }
+        }
+    }
+    private void rateControl() throws Exception {
+        UiPreferences.get(context).edit().putBoolean(UiPreferences.DEBUG_LOG,true).putBoolean(UiPreferences.QUALITY_ENABLED,true)
+                .putInt(UiPreferences.QUALITY_ITEMS,QualityStats.VIDEO_RATE|QualityStats.CODECS).apply(); DebugLog.setEnabled(true);
+        configure("videoBitRateMode","cbr");
+        ScrcpySession cbr=start(false);
+        check("cbr".equals(cbr.effectiveRateMode),"Supported CBR unexpectedly fell back");
+        until(() -> activity.qualityOverlay.getText().toString().contains("目标 6.0 Mbps · cbr"),5,"Target rate/mode missing from panel");
+        String log=new String(java.nio.file.Files.readAllBytes(DebugLog.file(context).toPath()),java.nio.charset.StandardCharsets.UTF_8);
+        check(log.contains("Video codec option set: bitrate-mode (Integer) = 2"),"Pinned server did not receive CBR option");
+        check(cbr.qualityCodecDescription().contains("未声明低延迟能力") || cbr.qualityCodecDescription().contains("支持低延迟"),"Decoder low-latency capability not described");
+        close();
+        configure("videoBitRateMode","cbr","videoEncoder","not.a.real.encoder");
+        ScrcpySession fallback=start(false);
+        check("auto".equals(fallback.effectiveRateMode),"Safe media retry retained CBR");
+        close();
+    }
     private void touchHold() throws Exception {
         configure(); ScrcpySession current = start(false); device.shell("logcat -c");
         android.view.MotionEvent.PointerProperties[] properties=new android.view.MotionEvent.PointerProperties[2];
@@ -211,7 +316,7 @@ final class StreamSettingsSmoke {
     }
     private void capture(String name) throws Exception {
         test.waitForIdleSync(); Thread.sleep(2800); Bitmap bitmap = test.getUiAutomation().takeScreenshot(); check(bitmap != null, "Screenshot unavailable");
-        File directory = context.getExternalFilesDir("media-settings-20261020");
+        File directory = context.getExternalFilesDir("media-settings-0.7.0");
         try (OutputStream out = new FileOutputStream(new File(directory, name + ".png"))) { bitmap.compress(Bitmap.CompressFormat.PNG, 100, out); } finally { bitmap.recycle(); }
     }
     private void main() throws Exception {

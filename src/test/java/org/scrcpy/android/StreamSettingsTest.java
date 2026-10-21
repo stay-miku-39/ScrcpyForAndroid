@@ -5,6 +5,12 @@ import java.util.*;
 import static org.junit.Assert.*;
 
 public class StreamSettingsTest {
+    @Test public void rateControlUsesPinnedServerOptionAndSafeRetryRemovesIt() {
+        assertEquals("", options().videoRateOptions(false));
+        assertEquals(" video_codec_options=bitrate-mode=2",options("videoBitRateMode","cbr").videoRateOptions(false));
+        assertEquals("",options("videoBitRateMode","cbr").videoRateOptions(true));
+        try { options("videoBitRateMode","bitrate-mode=0;reboot"); fail(); } catch (IllegalArgumentException expected) { }
+    }
     private StreamSettings options(String... pairs) {
         Map<String, String> values = new HashMap<>(); for (int i = 0; i < pairs.length; i += 2) values.put(pairs[i], pairs[i + 1]);
         return new StreamSettings(values, 1080, 2400);

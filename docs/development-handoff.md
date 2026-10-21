@@ -1,6 +1,6 @@
 # 开发接手文档
 
-整理日期：2026-10-21。源码基线为 0.6.1-dev（versionCode 9），此前 0.4.1 功能提交为 `2f877c1`。本文总结此前开发、实现选择和验证证据，供未读过聊天历史的 agent 接手。后续以用户最新要求和实际源码为准，修改后同步本文。
+整理日期：2026-10-22。源码基线为 0.7.0（versionCode 10），此前 0.6.1-dev 提交为 `d0f89ab`、0.4.1 功能提交为 `2f877c1`。本文总结此前开发、实现选择和验证证据，供未读过聊天历史的 agent 接手。后续以用户最新要求和实际源码为准，修改后同步本文。
 
 ## 1. 项目目的与当前结论
 
@@ -41,6 +41,7 @@
 | 0.5.1 | 控制队列有效期/容量与 MOVE 合并、安全输入释放、解码输出追帧 | 队满不再结束会话；不能截断已开始的协议帧或随意丢 H.264 参考帧；尚未实测真机弱网 |
 | 0.6.0-dev | 分辨率与音视频全局启动快照、主屏/虚拟显示回退、压缩音频和可选编解码组件 | 设置仅新会话生效；逻辑尺寸与编码上限独立；原始尺寸也遵循路线偏好；退出恢复主屏已有 override |
 | 0.6.1-dev | 整页手动保存、连接阶段与可选日志、选择性质量统计、首次安装编解码推荐、多指长按连续性 | 未保存离开丢弃；质量仅全屏前台按选项采集；本地硬解不代表远端硬编；过期 MOVE 不取消长按，UP 保留 |
+| 0.7.0 | 小窗标题甩出关闭、质量窗口定位、HSV 调色盘、目标码率/CBR、自动低延迟硬解选择 | 关闭保留 ADB；定位完成前不保存，普通显示触摸穿透；颜色仍须整页保存；默认编码策略和既有配置保留；Qualcomm 真机异常未复现，不能宣称已根治 |
 
 主仓库现有关键提交：`5b99ccd` 仓库重组、`d6ae69a` 麦克风、`c1c97b9` 电源/方向/设置、`2f877c1` 小窗微调。0.1/0.2 的功能早于主仓库重组，不能推断它们各有独立的根仓库版本提交。
 
@@ -176,6 +177,10 @@ flowchart LR
 
 各数字分别标注含义：FPS 为接收/解码/Surface 回调，码率为媒体有效载荷；视频延迟为本地入解码队列至输出（含排队），音频为 feed 调用耗时（含解码/输出等待）及 AudioTrack 缓冲/欠载，控制为实际写入次数/字节、排队与写入耗时，RTT 包含 Shell 开销。它们不代表光学帧率、远端消费率或端到端延迟；固定服务端没有编码耗时测量时显示“未上报”，组件名没取得则显示未知。不能将 Opus 输入/输出 PTS 当相同键匹配耗时。
 
+0.7.0 的码率对照核对了上游 `app/src/server.c`、`Options.java`、`SurfaceEncoder.java` 与 `Streamer.java`：两端使用同一服务端编码逻辑，Android 的目标值通过 `video_bit_rate` 传入，计数为压缩媒体有效载荷。桌面上游默认 8 Mbps，本项目保留 6 Mbps 默认，不静默改写已有设置；新增 8 Mbps 快捷填入和 `videoBitRateMode=auto|cbr` 启动快照。自动模式不传额外选项；CBR 只传固定的 `video_codec_options=bitrate-mode=2`，启动失败的兼容重试移除此选项并提示。质量窗口显示目标、实际与生效模式，不能把目标当网络瞬时硬上限。[Android CBR 说明](https://developer.android.com/reference/android/media/MediaCodecInfo.EncoderCapabilities#BITRATE_MODE_CBR)。
+
+`VideoDecoder` 自动选择先尝试支持当前格式/尺寸且声明 `FEATURE_LowLatency` 的硬件组件，创建或配置失败继续寻找，再使用原有自动选择/goldfish 软件回退；显式组件名不被覆盖。继续请求 `KEY_LOW_LATENCY=1`、保留全部压缩参考帧和已解码输出追帧。质量信息显示低延迟能力声明，不把它写成延迟实测结论；该能力需要 SoC 驱动支持，见 [AOSP 说明](https://source.android.com/docs/core/media/low-latency-media)。服务日志中已收到的编码器名称在启动时保存，稍后开启质量选项仍可读取；日志级别未提供的名称继续显示未上报。
+
 ### 6.3 Surface 所有权与生命周期
 
 `RemoteDisplay.surfaceCreated()` 在该设备独立 worker 中创建新 session 或 `attachOutput()`。session 的当前 listener 标识拥有者。全屏/小窗交接先让新 Surface 成为输出，再关闭旧组件；`dispose()/surfaceDestroyed()` 只有在 `ownsSession()` 为真时才结束会话。
@@ -205,6 +210,12 @@ flowchart LR
 - 三种不透明度均默认 100%、范围 20–100%；小窗用 WindowManager 整体 alpha，视频和栏一起变化。透明度不改变点击命中区域。
 - 设置外观组名为“界面外观”；质量字体默认白色、0–100% 不透明度。保存后应用，未保存离开丢弃；“恢复默认外观”先改草稿，仍需保存。质量文字透明背景且不接收触摸，仅全屏显示。
 
+0.7.0 的交互补充：标题移动过程中允许小窗越出屏幕，松手时由 `WindowGeometry.dismiss()` 判断半窗越界或向外快速甩出；不满足或 CANCEL 时重新限制边界，角落缩放继续使用原限制。关闭仍通过该设备的 `FloatingWindowService.closeWindow()`，不扩大到其他端点或 ADB。
+
+全屏质量菜单的“自定义参数位置”暂时给文字加深色背景并接收拖动，远端画面继续；完成保存 `remote-ui` 的 `qualityX/qualityY`（可用移动范围的 0–1 比例）。取消、返回、切后台或切设备丢弃本次定位；普通显示恢复透明和触摸穿透。关闭统计或字体完全透明时仍可临时定位，且不启用统计。布局随安全边距、方向和文字尺寸变化重新适配；设置 maxWidth/maxHeight 及定位栏边距前必须比较旧值，避免回调中持续触发布局。恢复前台先显示采样提示，待真实文字刷新后才比较位置。
+
+`QualityColorPicker.java` 为原生 HSV 调色盘/明度/色块/预览；确认写入设置草稿，仍由“保存全部设置”持久化，取消不改草稿。进入其他页或 Activity 暂停时关闭调色盘。质量不透明度与 RGB 颜色独立，手动编码输入仍保留。
+
 ### 6.5 麦克风与摄像头边界
 
 麦克风是反方向、独立可选链路：主控 AudioRecord → 48 kHz 单声道 PCM16 → ADB localabstract → 被控 shell `MicrophoneServer` → AudioPolicy 按目标 UID 注入 → 目标应用自己的 MIC / VOICE_COMMUNICATION AudioRecord。
@@ -224,6 +235,8 @@ flowchart LR
 **0.5.0 旋转验证待查风险**：多设备/后台专项、原有 `windowUi`（含一次旋转）及麦克风通道回归通过；独立四方向专项未完整通过，主控原生方向跟随后视频比例有时不更新。0.4.1 APK 对照也在小窗视频旋转阶段失败，但失败阶段不同，不能据此认定根因相同或排除 0.5.0 回归。暂未改上游或媒体协议；后续需复查视频重配与目标/主控渲染状态，不能沿用历史四向 PASS 作为本版已全过的证据。实际范围见 TESTING.md。
 
 其他未完成/未承诺：媒体剪贴板、自动重连、精确音画同步/漂移补偿、后台或小窗麦克风、通用摄像头替换、普通应用彻底拦截本机系统栏、彻底关机设备远程开机。长时间自然熄屏后的电源控制已提供，不代表新增了远端永不熄屏策略。
+
+**0.7.0 性能问题边界**：用户报告 Qualcomm `c2.qti.avc.decoder` 路径在桌面滑动时达到 100–150 Mbps、约 50 媒体包/s 和本地解码排队 16–20 ms。本次仅获准使用的两台模拟器不包含该组件；同机桌面 5.0.1/Android 端在 1080×2400、H.264、120 fps 上限、8/100 Mbps 目标下未复现该高码率。低延迟组件选择、CBR 请求与诊断改进已经实现，但没有原设备/同参数下的修复前后证据，原现象仍待实体机确认。模拟器的软件编码/软件解码排队不能外推为 Qualcomm 真机性能。继续调查需先核对双方目标码率、实际编码器、显示路线/尺寸和相同场景，再比较实际媒体流；不能仅凭本地解码器名称判定编码端码率异常根因。
 
 ## 8. 通用构建与测试准备
 
@@ -280,6 +293,8 @@ adb -s <主控序列号> shell am instrument -w -e host <被控IP> -e port <被�
 其余参数：`uiStage power/rotation/settings`（每次一个）、`-e windowUi true`（原有完整远控+窗口）、`-e mainUiOnly true`、`-e connectOnly true`、`-e microphoneOnly true`；新 PIN 可配合 `-e pairPort` / `-e pin`，错误 PIN 路径使用 `-e expectPairFailure true`（不要同时设置 `mainUiOnly true`）。完整准备/安装示例见根 README，勿把临时 PIN 写进共享文档或日志。
 
 0.6.1-dev 新增 `-e featureCase draft/logging/codecDiscovery`（每次一个）和 `-e mediaCase stages/quality/touchHold`；已有分辨率专项为 `main/virtual/fallback/presets/codecs`。基础回归可加 `-e defaultMedia true -e windowUi true` 暂用默认媒体设置后恢复。touchHold 的弱网验收需要测试代理实际注入延迟并核对计数，单独运行不能当作延迟注入通过。
+
+0.7.0 增加 `-e uiStage dismiss`、`-e mediaCase position|rateControl|performance` 和 `-e featureCase colorPicker`（每次一项）。performance 暂用 1080×2400、最大边 0、最高 120 fps、8/100 Mbps 目标，在专用被控端执行抽屉/通知栏手势，输出参数与本地统计 CSV；结束恢复偏好和原尺寸，不能用于未经授权的日常设备。position 额外验证本机横竖屏下参数窗口可见，不等于重测远端四向旋转专项。
 
 探针可能清空目标 Logcat、写文件/生成截图、暂改旋转/长按电源/设备名、录制测试音频。结束恢复系统和 UI 偏好并停止探针/小窗。真实设备通过用户当次授权的步骤验收，不能直接照搬专用模拟器预授权命令。成功检查 `result=PASS` 与 `INSTRUMENTATION_CODE: -1`，主机 adb 正常退出不代表测试通过。
 

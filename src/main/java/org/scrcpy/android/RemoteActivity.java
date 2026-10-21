@@ -25,6 +25,9 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
     private FrameLayout root;
     private TextView status;
     private PopupWindow menu;
+    private LinearLayout qualityPositionBar;
+    private boolean positioningQuality;
+    private float qualityX, qualityY;
     private ClipboardManager clipboard;
     private String lastClipboard = "";
     private boolean resumed, pendingFloating, awaitingPermission, awaitingNotifications, switchingWindow;
@@ -56,7 +59,7 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         setIntent(intent);
         if (next == device) { display.resumeOutput(); return; }
         ++outputGeneration;
-        dismissMenu(); stopMicrophone(); stopRotationMonitor(); powerKeys.release(); releaseKeys();
+        finishQualityPosition(false); dismissMenu(); stopMicrophone(); stopRotationMonitor(); powerKeys.release(); releaseKeys();
         display.dispose(); root.removeView(display);
         device = next; session = null; lastClipboard = ""; rotationInfo = null; lastRotationUpdate = -1; switchingWindow = false;
         display = new RemoteDisplay(this, device, intent.getBooleanExtra("audio", true), this); video = display.video;
@@ -89,6 +92,23 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         qualityOverlay = new QualityOverlay(this);
         FrameLayout.LayoutParams qualityPosition = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.LEFT);
         qualityPosition.setMargins(dp(8), dp(8), dp(8), dp(8)); root.addView(qualityOverlay, qualityPosition);
+        qualityOverlay.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob) -> positionQuality());
+        qualityOverlay.setOnTouchListener(new View.OnTouchListener() {
+            float downX, downY, startX, startY;
+            public boolean onTouch(View view, MotionEvent event) {
+                if (!positioningQuality) return false;
+                if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                    downX=event.getRawX(); downY=event.getRawY(); startX=view.getX(); startY=view.getY(); return true;
+                }
+                if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
+                    android.graphics.Rect area=qualityArea();
+                    qualityX=clamp((startX+event.getRawX()-downX-area.left)/(float)Math.max(1,area.width()));
+                    qualityY=clamp((startY+event.getRawY()-downY-area.top)/(float)Math.max(1,area.height())); positionQuality();
+                }
+                if (event.getActionMasked() == MotionEvent.ACTION_UP) view.performClick();
+                return true;
+            }
+        });
         ball = new Button(this); ball.setText("⋮"); ball.setTextSize(26); ball.setPadding(0, 0, 0, 0); ball.setMinWidth(0); ball.setMinimumWidth(0);
         ball.setTextColor(Color.WHITE); ball.setContentDescription("远程控制菜单，拖动可移动");
         ball.setBackground(MainUi.background(0xE62463E1, 0, 28, this));
@@ -121,7 +141,7 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         });
     }
     private int dp(float n) { return MainUi.dp(this, n); }
-    private static float clamp(float n) { return Math.max(0, Math.min(1, n)); }
+    private static float clamp(float n) { return Float.isNaN(n) ? 0 : Math.max(0, Math.min(1, n)); }
     private void positionBall() {
         if (ball == null || root.getWidth() == 0) return;
         android.graphics.Insets safe = root.getRootWindowInsets() == null ? android.graphics.Insets.NONE
@@ -129,15 +149,48 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         int left = Math.max(dp(8), safe.left), top = Math.max(dp(8), safe.top);
         ball.setX(left + ballX * Math.max(0, root.getWidth() - left - Math.max(dp(8), safe.right) - dp(48)));
         ball.setY(top + ballY * Math.max(0, root.getHeight() - top - Math.max(dp(8), safe.bottom) - dp(48)));
-        if (qualityOverlay != null) {
-            FrameLayout.LayoutParams position = (FrameLayout.LayoutParams)qualityOverlay.getLayoutParams();
-            int qualityLeft = safe.left + dp(8), qualityTop = safe.top + dp(8);
-            if (position.leftMargin != qualityLeft || position.topMargin != qualityTop) { position.leftMargin = qualityLeft; position.topMargin = qualityTop; qualityOverlay.setLayoutParams(position); }
-            qualityOverlay.setMaxWidth(Math.max(dp(120), root.getWidth() - qualityLeft - safe.right - dp(8)));
+        positionQuality();
+    }
+    private android.graphics.Rect qualityArea() {
+        android.graphics.Insets safe=root.getRootWindowInsets()==null ? android.graphics.Insets.NONE
+                : root.getRootWindowInsets().getInsetsIgnoringVisibility(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+        int left=safe.left+dp(8), top=safe.top+dp(8);
+        int width=Math.max(1,root.getWidth()-left-safe.right-dp(8)), height=Math.max(1,root.getHeight()-top-safe.bottom-dp(8));
+        if (qualityOverlay.getMaxWidth()!=width) qualityOverlay.setMaxWidth(width);
+        if (qualityOverlay.getMaxHeight()!=height) qualityOverlay.setMaxHeight(height);
+        return new android.graphics.Rect(left,top,left+Math.max(0,width-qualityOverlay.getWidth()),top+Math.max(0,height-qualityOverlay.getHeight()));
+    }
+    private void positionQuality() {
+        if (qualityOverlay==null || root.getWidth()==0) return;
+        if (!positioningQuality) { SharedPreferences prefs=UiPreferences.get(this); qualityX=clamp(prefs.getFloat(UiPreferences.QUALITY_X,0)); qualityY=clamp(prefs.getFloat(UiPreferences.QUALITY_Y,0)); }
+        android.graphics.Rect area=qualityArea(); qualityOverlay.setX(area.left+qualityX*area.width()); qualityOverlay.setY(area.top+qualityY*area.height());
+        if (qualityPositionBar!=null) {
+            FrameLayout.LayoutParams params=(FrameLayout.LayoutParams)qualityPositionBar.getLayoutParams();
+            int bottom=root.getHeight()-area.bottom-qualityOverlay.getHeight()+dp(8);
+            if (params.leftMargin!=area.left || params.bottomMargin!=bottom) {
+                params.setMargins(area.left,dp(8),dp(8),bottom); qualityPositionBar.setLayoutParams(params);
+            }
         }
+    }
+    void beginQualityPosition() {
+        if (positioningQuality || !resumed || display==null || !display.ownsSession()) return;
+        dismissMenu(); display.releaseTouches(); releaseKeys(); powerKeys.release(); positionQuality();
+        positioningQuality=true; qualityOverlay.setEditing(true);
+        qualityPositionBar=new LinearLayout(this); qualityPositionBar.setOrientation(LinearLayout.VERTICAL);
+        qualityPositionBar.setPadding(dp(8),dp(8),dp(8),dp(8)); qualityPositionBar.setBackground(MainUi.background(0xF0FFFFFF,0,12,this));
+        TextView hint=new TextView(this); hint.setText("拖动质量参数窗口到所需位置"); hint.setTextColor(MainUi.INK); qualityPositionBar.addView(hint);
+        addRow(qualityPositionBar,new String[]{"完成定位","取消定位"},new Runnable[]{() -> finishQualityPosition(true),() -> finishQualityPosition(false)});
+        root.addView(qualityPositionBar,new FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM)); positionQuality();
+    }
+    private void finishQualityPosition(boolean save) {
+        if (!positioningQuality) return;
+        if (save) UiPreferences.get(this).edit().putFloat(UiPreferences.QUALITY_X,qualityX).putFloat(UiPreferences.QUALITY_Y,qualityY).apply();
+        positioningQuality=false; qualityOverlay.setEditing(false);
+        root.removeView(qualityPositionBar); qualityPositionBar=null; positionQuality();
     }
     private void saveUi() { getSharedPreferences("remote-ui", MODE_PRIVATE).edit().putFloat("ballX", ballX).putFloat("ballY", ballY).putBoolean("clipboard", syncClipboard).putBoolean("volumeKeys", syncVolume).apply(); }
     private void toggleMenu() {
+        finishQualityPosition(false);
         if (menu != null && menu.isShowing()) { dismissMenu(); return; }
         LinearLayout panel = new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL); panel.setPadding(dp(12), dp(12), dp(12), dp(12));
         panel.setBackground(MainUi.background(Color.WHITE, 0, 18, this));
@@ -181,6 +234,7 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         SharedPreferences prefs = UiPreferences.get(this);
         CheckBox enabled = new CheckBox(this); enabled.setText("显示质量参数"); enabled.setTextColor(MainUi.INK); enabled.setChecked(prefs.getBoolean(UiPreferences.QUALITY_ENABLED, false)); enabled.setTag("qualityMaster"); panel.addView(enabled);
         enabled.setOnCheckedChangeListener((v, value) -> prefs.edit().putBoolean(UiPreferences.QUALITY_ENABLED, value).apply());
+        addRow(panel, new String[]{"自定义参数位置"}, new Runnable[]{this::beginQualityPosition});
         for (int i = 0; i < QualityStats.ITEMS.length; i++) {
             int bit = QualityStats.ITEMS[i]; CheckBox item = new CheckBox(this); item.setText(QualityStats.LABELS[i]); item.setTextColor(MainUi.INK); item.setTag("qualityItem" + bit);
             item.setChecked((prefs.getInt(UiPreferences.QUALITY_ITEMS, QualityStats.FPS | QualityStats.VIDEO_RATE) & bit) != 0); panel.addView(item);
@@ -216,6 +270,7 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
         if (ball != null) ball.setAlpha(UiPreferences.opacity(this, UiPreferences.BALL));
         if (menu != null) menu.getContentView().setAlpha(UiPreferences.opacity(this, UiPreferences.MENU));
         updateQuality();
+        positionQuality();
     }
     private void updateQuality() { if (qualityOverlay != null) qualityOverlay.bind(session, display, resumed && !switchingWindow && !pendingFloating && !isFinishing()); }
     private void key(int code) { if (session != null && display.ownsSession()) session.key(code); }
@@ -223,7 +278,7 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
     // Local predictive back is registered with OnBackPressedDispatcher above.
     // This KEYCODE_BACK is serialized for the remote device, not intercepted locally.
     @android.annotation.SuppressLint("GestureBackNavigation")
-    private void remoteBack() { if (menu != null && menu.isShowing()) dismissMenu(); else key(KeyEvent.KEYCODE_BACK); }
+    private void remoteBack() { if (positioningQuality) finishQualityPosition(false); else if (menu != null && menu.isShowing()) dismissMenu(); else key(KeyEvent.KEYCODE_BACK); }
     // Public Activity/Window callback; AndroidX core's inherited bridge carries
     // an overly broad RestrictTo annotation. Intercept before focused views.
     @android.annotation.SuppressLint("RestrictedApi")
@@ -422,6 +477,7 @@ public class RemoteActivity extends androidx.activity.ComponentActivity implemen
     @Override protected void onUserLeaveHint() { userLeaving = true; super.onUserLeaveHint(); }
     @Override protected void onPause() {
         resumed = false; stopRotationMonitor(); if (powerKeys != null) powerKeys.release();
+        finishQualityPosition(false);
         if (qualityOverlay != null) qualityOverlay.stop();
         if (!awaitingMicrophonePermission) stopMicrophone(); releaseKeys();
         if (display != null) display.releaseTouches();

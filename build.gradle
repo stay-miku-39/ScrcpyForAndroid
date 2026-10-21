@@ -27,8 +27,8 @@ android {
         applicationId 'org.scrcpy.android'
         minSdk 30
         targetSdk 36
-        versionCode 9
-        versionName '0.6.1-dev'
+        versionCode 10
+        versionName '0.7.0'
         testInstrumentationRunner 'org.scrcpy.android.SmokeInstrumentation'
     }
     compileOptions {

@@ -29,6 +29,7 @@ final class MainUi {
     private EditText pairHost;
     private String page = "connect";
     private SettingsDraft settingsDraft;
+    AlertDialog colorPicker;
 
     MainUi(MainActivity activity, SharedPreferences preferences) { a = activity; prefs = preferences; }
     static int dp(Context context, float n) { return Math.round(n * context.getResources().getDisplayMetrics().density); }
@@ -133,6 +134,7 @@ final class MainUi {
         a.audio = new CheckBox(a); a.audio.setText("同步远程声音"); a.audio.setTextColor(INK); a.audio.setChecked(prefs.getBoolean("audio", true)); remote.addView(a.audio);
         operation(remote, "开始投屏和控制", () -> a.startRemote(false), true);
         operation(remote, "悬浮小窗", () -> a.startRemote(true), false);
+        note(remote,"小窗可拖动标题移动；向屏幕边缘甩出可关闭投屏，ADB 连接仍保留。");
     }
     private void buildPair() {
         LinearLayout body = screen("pair", "无线配对", "connect"), card = card(body);
@@ -183,6 +185,10 @@ final class MainUi {
             public void onTextChanged(CharSequence s, int start, int before, int count) { appearance.edit().putString(UiPreferences.QUALITY_COLOR, s.toString().trim()).apply(); }
             public void afterTextChanged(Editable e) { }
         });
+        action(card, "打开字体调色盘", () -> {
+            colorPicker=QualityColorPicker.show(a,UiPreferences.qualityColor(appearance),color -> qualityColor.setText(String.format(Locale.ROOT,"#%06X",color & 0xFFFFFF)));
+            colorPicker.setOnDismissListener(dialog -> colorPicker=null);
+        }, false).setContentDescription("质量参数字体调色盘");
         action(card, "恢复默认外观", () -> {
             appearance.edit().remove(UiPreferences.BALL).remove(UiPreferences.MENU).remove(UiPreferences.WINDOW).remove(UiPreferences.QUALITY_OPACITY).remove(UiPreferences.QUALITY_COLOR).apply();
             ViewGroup controls = (ViewGroup)pages.get("settings");
@@ -264,9 +270,11 @@ final class MainUi {
         ((android.view.inputmethod.InputMethodManager)a.getSystemService(Context.INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(content.getWindowToken(), 0);
     }
     void discardSettingsDraft() {
+        if (colorPicker!=null) { colorPicker.dismiss(); colorPicker=null; }
         if ("settings".equals(page)) rebuildSettings();
     }
     private void rebuildSettings() {
+        if (colorPicker!=null) { colorPicker.dismiss(); colorPicker=null; }
         View previous = pages.remove("settings"); content.removeView(previous); buildSettings();
         content.setDisplayedChild(Math.max(0, new ArrayList<>(pages.keySet()).indexOf(page)));
     }

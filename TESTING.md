@@ -1,5 +1,97 @@
 # Validation history
 
+## 0.7.0 window dismissal, quality positioning and palette — 2026-10-22
+
+The requested items were implemented and checked in order, then the final
+regression below ran on two explicitly selected Android 16 / API 36 emulators.
+Only those dedicated emulators were operated. No application data, RSA identity,
+Keystore or pairing records were cleared. The pinned scrcpy 5.0.1 submodule and
+vendored ADB production sources are unchanged.
+
+- `:assembleDebug`, `:assembleDebugAndroidTest`: PASS, versionCode 10,
+  versionName `0.7.0`, compile/target API 36, min API 30.
+- Application unit tests: **64 PASS**. New cases exercise dismissal thresholds,
+  inward/slow versus outward throws, fixed CBR option serialization, safe retry
+  removal and invalid mode rejection.
+- ADB unit tests: **29 PASS / 2 physical USB SKIP**. Both unit suites were
+  explicitly rerun in this run; old UP-TO-DATE reports were not counted as new
+  execution.
+- Android Lint: **0 errors / 38 warnings**; no baseline or blanket suppression
+  added. Remaining warnings include existing API/dependency notices,
+  programmatic views, accessibility, RTL and string localization suggestions.
+- APK signature verification PASS; certificate SHA-256 matches the previous
+  `0.6.1-dev` artifact. Replacement installation retained data. The production
+  manifest contains no test instrumentation or probe activities.
+- Deliverable: `dist/ScrcpyForAndroid-0.7.0-debug.apk`; SHA-256 is recorded in
+  `dist/SHA256SUMS.txt`, with older artifacts retained.
+
+| Final integration | Actual result |
+| --- | --- |
+| `uiStage dismiss` | PASS: real screen-coordinate drag/fling, ordinary move, CANCEL and insufficient slow edge crossing; outward throw closes its session, preserves working ADB and does not leak remote touches |
+| `mediaCase position` | PASS: quality menu entry, real drag, explicit completion, cancellation, foreground resume, ordinary touch-through, disabled/0%-opacity preview without statistics, native local landscape/portrait bounds and same session; original target size restored |
+| `mediaCase rateControl` | PASS: CBR reaches the pinned server as `bitrate-mode (Integer) = 2`, target/mode appear in the quality panel, decoder capability is described, unavailable component safe fallback removes CBR |
+| `featureCase colorPicker` | PASS: real HSV palette drag, brightness/preview, swatches, cancel, confirmation changes only the draft, navigation discards it, explicit Save persists it and reentry reloads it |
+| `mediaCase quality` | PASS: selective counters, local video/audio/RTT samples, transparent touch-through, explicit appearance save, foreground/background/floating sampling boundaries, same-session handoff and callback worker shutdown |
+| `uiStage window` | PASS: equal bars, rounded clip, icons, drag-only grips, aspect/bounds, long Chinese ADB name/ellipsis, ordinary title move, isolated chrome input, power icon and same-session fullscreen restoration |
+| `uiStage settings` | PASS: actual overflow/back navigation, manual Save, minimum opacity, live floating alpha after Save, reset and unchanged identity/history/session |
+| `featureCase draft` | PASS: whole-page explicit Save and draft discard on navigation/Home |
+| `defaultMedia true`, `windowUi true` | PASS: identity, Shell, file SHA-256 roundtrip, scan, video/non-silent audio, two-pointer input, bidirectional clipboard, one remote rotation, HOME, physical volume events, floating touch/roundtrip/close with ADB retained |
+| `mainUiOnly true` | PASS: actual main UI connection and saved history |
+| `uiStage power` | Final PASS: full short power/wake/long/chord screenshot and floating short/long power with bounded release; see intermittent failures below |
+| `mediaCase performance` | PASS: two complete 1080×2400 H.264 sessions, max size 0, max FPS 120, 8/100 Mbps targets, actual drawer/notification gestures, rate/FPS/local queue CSV, identity and original target size restoration |
+
+Each passing row returned `result=PASS` and `INSTRUMENTATION_CODE: -1`.
+Palette, positioned landscape text, complete quality text and floating-window
+screenshots were inspected. Temporary preference/history changes and target
+settings were restored, and test activities/sessions were stopped.
+
+Development failures are not counted as PASS: a position layout callback loop
+was fixed by avoiding unchanged size/layout writes; real fling injection timing,
+touch-through coordinates, restored-text layout settling and dialog callback
+waiting were corrected in fixtures and rerun. Power regression additionally had
+intermittent full/floating GlobalActions BACK-close failures. A diagnostic run
+reported zero control queue expiry/overflow. A previous `0.6.1-dev` APK comparison
+and a subsequent final `0.7.0` run both passed the complete power stage. The
+intermittent close failure's cause is not established; this is not claimed as a
+newly fixed power defect.
+
+### Bitrate comparison and remaining performance issue
+
+The same dedicated target and repeated drawer/notification gestures were used
+with the original desktop scrcpy **5.0.1** and the Android client. Both ran
+H.264 at 1080×2400, max size 0, max FPS 120, audio disabled, with the same
+`c2.android.avc.encoder`. Desktop video payload sizes were measured from a
+no-window recording using ffprobe; this comparison does not benchmark desktop
+rendering/decoding. Android rates come from one-second optional media samples.
+
+| Target bitrate | Desktop payload average / one-second peak | Android before performance changes, sample peak | Android final, sample peak |
+| --- | --- | --- | --- |
+| 8 Mbps | 1.90 / 3.74 Mbps | 4.43 Mbps | 1.93 Mbps |
+| 100 Mbps | 4.18 / 9.20 Mbps | 5.77 Mbps | 2.10 Mbps |
+
+These are sequential, unsynchronized scene runs. Their peak windows and active
+durations differ; lower final values are **not evidence of an improvement**.
+The emulator uses software AVC decoding and was CPU-sensitive: received FPS
+was roughly 1–19 and decoder queue measurements reached hundreds of
+milliseconds. It has no `c2.qti.avc.decoder`, so these values cannot establish
+Qualcomm performance or a 120 FPS/low-latency guarantee.
+
+Source comparison confirms that the Android client passes `video_bit_rate` to
+the same upstream encoder and counts compressed payload bytes. Desktop default
+is 8 Mbps; this application's existing 6 Mbps default and saved configuration
+remain intact. The new 8 Mbps shortcut, target/actual display, optional CBR and
+automatic preference for declared low-latency hardware decoders improve control
+and diagnosis. The emulator exercised ordinary/software fallback and supported
+CBR; it cannot validate actual low-latency hardware selection or a driver that
+rejects CBR at runtime.
+
+**The reported 100–150 Mbps, about 50 packets/s and 16–20 ms Qualcomm decoder
+scenario was not reproduced and is not confirmed fixed.** Further confirmation
+requires the original hardware, matching target bitrate/encoder/display route
+and before/after measurements. Physical Android 16→15, USB/OTG, sustained weak
+Wi-Fi, microphone routing and the independent four-way remote rotation stage
+were not rerun; the historical boundaries below remain in force.
+
 ## 0.6.1-dev settings, diagnostics, quality and touch continuity — 2026-10-21
 
 The six requested changes were implemented and tested one at a time, followed

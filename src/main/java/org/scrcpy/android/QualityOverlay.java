@@ -16,13 +16,14 @@ final class QualityOverlay extends TextView {
     private RemoteDisplay owner;
     private int activeMask;
     private long lastProbe;
+    private boolean editing;
     volatile QualityStats.Sample lastSample;
     private final Runnable tick = new Runnable() { public void run() {
         if (activeMask == 0 || session == null || session.isClosed() || owner == null || !owner.ownsSession()) { stop(); return; }
         if (!session.isStarted()) { setText("质量参数：等待连接…"); postDelayed(this, 1000); return; }
         QualityStats.Sample sample = session.quality.sample(); lastSample = sample; StringBuilder text = new StringBuilder();
         if (has(QualityStats.FPS)) line(text, "FPS 收 %.1f / 解 %.1f / Surface %.1f", sample.receivedFps, sample.decodedFps, sample.presentedFps);
-        if (has(QualityStats.VIDEO_RATE)) line(text, "视频 %.2f Mbps · %.1f 媒体包/s", sample.videoMbps, sample.videoPps);
+        if (has(QualityStats.VIDEO_RATE)) line(text, "视频 %.2f Mbps · %.1f 媒体包/s\n目标 %.1f Mbps · %s", sample.videoMbps, sample.videoPps, session.settings.videoBitRate/1e6, session.effectiveRateMode);
         if (has(QualityStats.VIDEO_DELAY)) line(text, "本地视频解码 %s ms（含排队）\n远端编码延迟：未上报", number(sample.videoDelayMs));
         if (has(QualityStats.INPUT_WAIT)) line(text, "视频输入等待 %s ms", number(sample.inputWaitMs));
         if (has(QualityStats.AUDIO_RATE)) line(text, "音频 %.1f kbps · %.1f 媒体包/s", sample.audioKbps, sample.audioPps);
@@ -43,11 +44,20 @@ final class QualityOverlay extends TextView {
     }
     void bind(ScrcpySession next, RemoteDisplay output, boolean foreground) {
         SharedPreferences prefs = UiPreferences.get(getContext());
-        setTextColor(UiPreferences.qualityColor(prefs)); setAlpha(UiPreferences.percent(prefs, UiPreferences.QUALITY_OPACITY) / 100f);
+        setTextColor(editing ? Color.WHITE : UiPreferences.qualityColor(prefs)); setAlpha(editing ? 1 : UiPreferences.percent(prefs, UiPreferences.QUALITY_OPACITY) / 100f);
         int mask = foreground && next != null && output != null && output.ownsSession() ? UiPreferences.qualityMask(prefs) : 0;
         if (session == next && owner == output && activeMask == mask) return;
         stop(); session = next; owner = output; activeMask = mask;
         if (mask != 0) { session.configureQuality(owner, mask); setVisibility(VISIBLE); setText("质量参数：采样中…"); postDelayed(tick, 1000); }
+        else if (editing) { setVisibility(VISIBLE); setText("拖动质量参数到所需位置"); }
+    }
+    void setEditing(boolean value) {
+        editing = value; setClickable(value);
+        setImportantForAccessibility(value ? IMPORTANT_FOR_ACCESSIBILITY_YES : IMPORTANT_FOR_ACCESSIBILITY_NO);
+        setBackgroundColor(value ? 0xD0182841 : Color.TRANSPARENT);
+        SharedPreferences prefs = UiPreferences.get(getContext());
+        setTextColor(value ? Color.WHITE : UiPreferences.qualityColor(prefs)); setAlpha(value ? 1 : UiPreferences.percent(prefs, UiPreferences.QUALITY_OPACITY) / 100f);
+        if (activeMask == 0) { setText(value ? "拖动质量参数到所需位置" : ""); setVisibility(value ? VISIBLE : GONE); }
     }
     private boolean has(int bit) { return (activeMask & bit) != 0; }
     int activeMask() { return activeMask; }
