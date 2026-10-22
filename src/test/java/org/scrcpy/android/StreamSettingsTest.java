@@ -5,6 +5,19 @@ import java.util.*;
 import static org.junit.Assert.*;
 
 public class StreamSettingsTest {
+    @Test public void targetPoliciesKeepLargeLimitFromDrivingEncoder() {
+        assertEquals(8000000, options().videoBitRate);
+        assertEquals(20000000, options().videoBitRateLimit);
+        assertEquals(8000000, options("videoBitRate","100000000","videoBitRateLimit","100000000").videoBitRate);
+        assertEquals(8000000, options("videoTargetMode","auto","videoBitRateLimit","100000000").videoBitRate);
+        assertEquals(800000, options("videoTargetMode","auto","videoBitRateLimit","1000000").videoBitRate);
+        assertEquals(100000, options("videoTargetMode","auto","videoBitRateLimit","100000").videoBitRate);
+        assertEquals(1000000, options("videoBitRateLimit","1000000").videoBitRate);
+        assertEquals(4000000, options("videoTargetMode","custom","videoBitRate","4000000").videoBitRate);
+        for(String[] invalid:new String[][]{{"videoTargetMode","invalid"},{"videoBitRateLimit","0"},{"videoTargetMode","custom","videoBitRate","100000000"}}) {
+            try { options(invalid); fail(); } catch(IllegalArgumentException expected) { }
+        }
+    }
     @Test public void rateControlUsesPinnedServerOptionAndSafeRetryRemovesIt() {
         assertEquals("", options().videoRateOptions(false));
         assertEquals(" video_codec_options=bitrate-mode=2",options("videoBitRateMode","cbr").videoRateOptions(false));

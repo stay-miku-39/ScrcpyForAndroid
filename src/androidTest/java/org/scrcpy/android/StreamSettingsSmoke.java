@@ -36,6 +36,7 @@ final class StreamSettingsSmoke {
             else if ("position".equals(stage)) smoke.position();
             else if ("performance".equals(stage)) smoke.performance();
             else if ("rateControl".equals(stage)) smoke.rateControl();
+            else if ("rateLimit".equals(stage)) smoke.rateLimit();
             else if ("touchHold".equals(stage)) smoke.touchHold();
             else throw new IllegalArgumentException("Unknown mediaCase: " + stage);
             check(identity.equals(device.adb.fingerprint()), "Media settings changed ADB identity");
@@ -215,13 +216,13 @@ final class StreamSettingsSmoke {
         try (PrintWriter out=new PrintWriter(new File(directory,"android.csv"))) {
             out.println("target_bps,sample,received_fps,decoded_fps,video_mbps,packets_s,decode_queue_ms,input_wait_ms");
             for (String rate:new String[]{"8000000","100000000"}) {
-                configure("customWidth","1080","customHeight","2400","maxSize","0","fps","120","videoBitRate",rate);
+                configure("customWidth","1080","customHeight","2400","maxSize","0","fps","120","videoTargetMode","custom","videoBitRateLimit","100000000","videoBitRate",rate);
                 ScrcpySession session=start(false);
                 check(session.width==1080 && session.height==2400,"Performance case unexpectedly scaled");
                 device.shell("input keyevent KEYCODE_HOME"); Thread.sleep(800);
                 Throwable[] failure={null};
                 Thread gestures=new Thread(() -> {
-                    try { device.shell("for i in 1 2 3 4 5 6 7 8; do input swipe 540 2100 540 400 250; input swipe 540 500 540 2100 250; cmd statusbar expand-notifications; sleep 0.2; cmd statusbar collapse; done"); }
+                    try { device.shell("for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do input swipe 540 2100 540 400 250; input swipe 540 500 540 2100 250; cmd statusbar expand-notifications; sleep 0.2; cmd statusbar collapse; done"); }
                     catch(Throwable error) { failure[0]=error; }
                 },"performance-test-gestures"); gestures.start();
                 int active=0;
@@ -242,7 +243,7 @@ final class StreamSettingsSmoke {
         configure("videoBitRateMode","cbr");
         ScrcpySession cbr=start(false);
         check("cbr".equals(cbr.effectiveRateMode),"Supported CBR unexpectedly fell back");
-        until(() -> activity.qualityOverlay.getText().toString().contains("目标 6.0 Mbps · cbr"),5,"Target rate/mode missing from panel");
+        until(() -> activity.qualityOverlay.getText().toString().contains("目标 8.0 Mbps · cbr"),5,"Target rate/mode missing from panel");
         String log=new String(java.nio.file.Files.readAllBytes(DebugLog.file(context).toPath()),java.nio.charset.StandardCharsets.UTF_8);
         check(log.contains("Video codec option set: bitrate-mode (Integer) = 2"),"Pinned server did not receive CBR option");
         check(cbr.qualityCodecDescription().contains("未声明低延迟能力") || cbr.qualityCodecDescription().contains("支持低延迟"),"Decoder low-latency capability not described");
@@ -250,6 +251,50 @@ final class StreamSettingsSmoke {
         configure("videoBitRateMode","cbr","videoEncoder","not.a.real.encoder");
         ScrcpySession fallback=start(false);
         check("auto".equals(fallback.effectiveRateMode),"Safe media retry retained CBR");
+        close();
+    }
+    private void rateLimit() throws Exception {
+        UiPreferences.get(context).edit().putBoolean(UiPreferences.DEBUG_LOG,true).putBoolean(UiPreferences.QUALITY_ENABLED,true)
+                .putInt(UiPreferences.QUALITY_ITEMS,QualityStats.VIDEO_RATE|QualityStats.FPS|QualityStats.VIDEO_DELAY|QualityStats.INPUT_WAIT).apply(); DebugLog.setEnabled(true);
+        File directory=context.getExternalFilesDir("bitrate-limit-smoke");
+        try (PrintWriter out=new PrintWriter(new File(directory,"limit.csv"))) {
+            out.println("mode,target_bps,limit_bps,sample,video_mbps,decoded_fps,decode_queue_ms,input_wait_ms");
+            for (String mode:new String[]{"default","auto","custom"}) {
+                configure("videoTargetMode",mode,"videoBitRateLimit","1000000","videoBitRate","1000000","fps","60");
+                ScrcpySession session=start(false);
+                check(session.settings.videoBitRate==("auto".equals(mode)?800000:1000000),"Wrong effective target: "+mode);
+                device.shell("am start -n org.scrcpy.android.test/org.scrcpy.android.TargetProbeActivity --ez bitrateLoad true");
+                for (int i=0;i<12;i++) {
+                    Thread.sleep(1100); QualityStats.Sample sample=activity.qualityOverlay.lastSample;
+                    check(sample!=null,"Limit sample absent");
+                    out.printf(Locale.ROOT,"%s,%d,%d,%d,%.3f,%.3f,%.3f,%.3f%n",mode,session.settings.videoBitRate,session.settings.videoBitRateLimit,i,sample.videoMbps,sample.decodedFps,sample.videoDelayMs,sample.inputWaitMs); out.flush();
+                }
+                check(!session.bitrateLimitUnavailable && !session.isClosed(),"Encoder could not apply soft limit");
+                until(() -> activity.qualityOverlay.getText().toString().contains("软上限 1.0 Mbps"),5,"Limit absent from overlay");
+                close();
+            }
+        }
+        configure("customWidth","1080","customHeight","2400","maxSize","0","fps","120","videoBitRateLimit","8000000");
+        ScrcpySession capped=start(false);
+        device.shell("input keyevent KEYCODE_HOME");
+        Throwable[] gestureError={null};
+        Thread gestures=new Thread(() -> {
+            try { device.shell("for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do input swipe 540 2100 540 400 250; input swipe 540 500 540 2100 250; cmd statusbar expand-notifications; sleep 0.2; cmd statusbar collapse; done"); }
+            catch(Throwable error) { gestureError[0]=error; }
+        }); gestures.start();
+        try(PrintWriter out=new PrintWriter(new File(directory,"capped-desktop.csv"))) {
+            out.println("sample,video_mbps,decoded_fps,decode_queue_ms");
+            for(int i=0;i<20;i++) {
+                Thread.sleep(1100); QualityStats.Sample sample=activity.qualityOverlay.lastSample;
+                check(sample!=null,"Capped desktop sample absent");
+                out.printf(Locale.ROOT,"%d,%.3f,%.3f,%.3f%n",i,sample.videoMbps,sample.decodedFps,sample.videoDelayMs); out.flush();
+            }
+        }
+        gestures.join(30000); check(!gestures.isAlive() && gestureError[0]==null && !capped.isClosed() && !capped.bitrateLimitUnavailable,"Capped session failed");
+        check(capped.bitrateAdjustments>0 && capped.currentVideoBitRate<=capped.settings.videoBitRate,"Dynamic encoder target not reported to client");
+        String log=new String(java.nio.file.Files.readAllBytes(DebugLog.file(context).toPath()),java.nio.charset.StandardCharsets.UTF_8);
+        check(log.contains("Video bitrate soft limit active: 8000000"),"Host limit hook not active");
+        check(log.contains("Video bitrate adjusted: target="),"Desktop did not exercise dynamic limit");
         close();
     }
     private void touchHold() throws Exception {

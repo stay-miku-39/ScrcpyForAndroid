@@ -14,15 +14,28 @@ public class TargetProbeActivity extends Activity {
     private Thread tone;
     @Override public void onCreate(Bundle state) {
         super.onCreate(state); getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        boolean bitrateLoad=getIntent().getBooleanExtra("bitrateLoad",false);
         setContentView(new View(this) {
             final Paint paint = new Paint(3);
+            final Bitmap texture = bitrateLoad ? texture() : null;
+            private Bitmap texture() {
+                int[] pixels=new int[512*512]; java.util.Random random=new java.util.Random(731);
+                for(int i=0;i<pixels.length;i++) { int shade=random.nextInt(128)+64; pixels[i]=Color.rgb(shade,shade,shade); }
+                return Bitmap.createBitmap(pixels,512,512,Bitmap.Config.ARGB_8888);
+            }
             @Override protected void onDraw(Canvas canvas) {
+                if(texture!=null) {
+                    int offset=(int)(SystemClock.uptimeMillis()/4%512);
+                    for(int y=-512;y<getHeight();y+=512) for(int x=0;x<getWidth();x+=512) canvas.drawBitmap(texture,x,y+offset,paint);
+                    postInvalidateDelayed(16); return;
+                }
                 canvas.drawColor(Color.rgb(16, 34, 64)); paint.setColor(Color.CYAN); paint.setTextSize(44);
                 canvas.drawText("Scrcpy target probe", 60, 180, paint);
                 canvas.drawText("Android " + Build.VERSION.RELEASE, 60, 250, paint);
                 float x = 80 + (SystemClock.uptimeMillis() % 3000) * (getWidth() - 160) / 3000f;
                 canvas.drawCircle(x, getHeight() / 2f, 60, paint); postInvalidateDelayed(33);
             }
+            @Override protected void onDetachedFromWindow() { if(texture!=null) texture.recycle(); super.onDetachedFromWindow(); }
             @Override public boolean onTouchEvent(MotionEvent event) {
                 int action = event.getActionMasked();
                 if (action != MotionEvent.ACTION_MOVE) Log.i("ScrcpyProbe", "touch action=" + action + " pointers=" + event.getPointerCount());

@@ -4,6 +4,33 @@ apply plugin: 'com.android.application'
 
 layout.buildDirectory = rootProject.layout.buildDirectory.dir('scrcpy-server')
 
+// Keep the pinned submodule pristine. Inject two explicit hooks into a generated
+// copy; fail the build if upstream no longer matches rather than silently losing
+// enforcement. The host extension leaves the media/control wire format intact.
+def upstreamJava = file('src/main/java')
+def generatedJava = layout.buildDirectory.dir('generated/hostServerJava')
+def limiterHooks = [
+    '        MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();':
+        '        com.genymobile.scrcpy.android.VideoRateLimiter rateLimiter = new com.genymobile.scrcpy.android.VideoRateLimiter(videoBitRate);',
+    '                    streamer.writePacket(codecBuffer, bufferInfo);':
+        '                    rateLimiter.onFrame(codec, bufferInfo.size);'
+]
+def generateHostServer = tasks.register('generateHostServer', Sync) {
+    from upstreamJava
+    into generatedJava
+    filteringCharset = 'UTF-8'
+    doFirst {
+        def source = new File(upstreamJava, 'com/genymobile/scrcpy/video/SurfaceEncoder.java').getText('UTF-8')
+        limiterHooks.each { needle, insertion ->
+            if (source.split(java.util.regex.Pattern.quote(needle), -1).length != 2)
+                throw new GradleException('Pinned SurfaceEncoder bitrate hook changed: ' + needle.trim())
+        }
+    }
+    filesMatching('com/genymobile/scrcpy/video/SurfaceEncoder.java') {
+        filter { line -> limiterHooks.containsKey(line) ? line + '\n' + limiterHooks[line] : line }
+    }
+}
+
 android {
     namespace = 'com.genymobile.scrcpy'
     compileSdk = (project.findProperty('androidCompileSdk') ?: '36').toInteger()
@@ -24,10 +51,15 @@ android {
         buildConfig = true
         aidl = true
     }
+    sourceSets {
+        main.java.setSrcDirs([generatedJava, rootProject.file('src/serverExtensions/java')])
+        test.java.srcDir rootProject.file('src/serverExtensions/test')
+    }
     lint {
         disable 'UseRequiresApi'
     }
 }
+tasks.named('preBuild').configure { dependsOn generateHostServer }
 
 dependencies {
     testImplementation 'junit:junit:4.13.2'

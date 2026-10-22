@@ -1,5 +1,92 @@
 # Validation history
 
+## 0.8.0 target policies and video soft limit — 2026-10-22
+
+Two explicitly selected Android 16 / API 36 emulators were used for the new
+request. No real device was operated. Application data, RSA identity, Keystore
+and pairing records were retained through replacement installation. The
+scrcpy submodule remains the original pinned 5.0.1; a generated source copy
+adds the host-specific encoder feedback hooks described in
+[bitrate-control.md](docs/bitrate-control.md). Media/control wire formats and
+vendored ADB production sources are unchanged.
+
+- `:assembleDebug`, `:assembleDebugAndroidTest`: PASS, versionCode 11,
+  versionName `0.8.0`, compile/target API 36, min API 30.
+- Application unit tests: **65 PASS**. New coverage includes default/automatic/
+  custom targets, low limits, legacy high-target interpretation and rejection
+  of invalid modes or a custom target above its limit.
+- Server unit tests: **48 PASS**, including 3 new governor tests for excess
+  output, bounded adjustment frequency, slow recovery, original-target ceiling,
+  expired buckets and large-byte arithmetic.
+- ADB unit tests: **29 PASS / 2 physical USB SKIP**, explicitly rerun.
+- Android Lint: **0 errors / 36 warnings**. No baseline or blanket suppression
+  was added. Signature verification PASS; the certificate matches `0.7.0`.
+  Production manifest inspection found no test instrumentation/probe activity.
+- Deliverable: `dist/ScrcpyForAndroid-0.8.0-debug.apk`, with SHA-256 recorded in
+  `dist/SHA256SUMS.txt`; older APKs retained.
+
+All **14 final integration cases** returned both `result=PASS` and
+`INSTRUMENTATION_CODE: -1`:
+
+| Final case | Actual result |
+| --- | --- |
+| `featureCase bitratePolicies` | PASS: real widgets, default 8 Mbps despite a 100 Mbps limit, 80% automatic target at a low limit, valid custom save, rejection above limit, draft discard and legacy custom-value retention |
+| `mediaCase rateLimit` | PASS: three modes at a 1 Mbps limit, texture animation samples, full-size drawer/notification workload at 8 Mbps limit, real dynamic target updates reported to the client, session/identity retained and original target size restored |
+| `mediaCase rateControl` | PASS: CBR reaches the encoder, initial target/mode appear, unavailable selected component falls back to automatic control while retaining the soft limit |
+| `mediaCase performance` | PASS: complete 1080×2400 H.264 sessions, max size 0, max FPS 120, custom 8/100 Mbps targets, 100 Mbps soft limit, live samples and original-size restoration |
+| `mediaCase quality` | PASS: selective sampling, rate/current-request/limit text, local audio/video/RTT data, touch-through, saved appearance, foreground/background/floating boundaries and same-session restoration |
+| `mediaCase position` | PASS: drag, complete/cancel, foreground return, touch-through, disabled preview and local orientation bounds |
+| `featureCase draft` | PASS: whole-page save and navigation/Home draft discard |
+| `featureCase colorPicker` | PASS: HSV/brightness drag, preview/swatches, cancel, draft-only confirmation, Save and reentry |
+| `uiStage dismiss` | PASS: ordinary movement/CANCEL/slow edge protection, outward fling closes only the projection, ADB retained and no remote touches |
+| `uiStage window` | PASS: geometry, icons, drag-only grips, device title, isolated chrome input and same-session fullscreen restoration |
+| `uiStage settings` | PASS: menu/back, explicit Save, opacity/reset and unchanged identity/history/session |
+| `mediaCase codecs` | PASS: supported video/audio formats and named components with the extended server |
+| `mediaCase virtual` | PASS: independent display, ownership/size behavior and cleanup |
+| `defaultMedia true`, `windowUi true` | PASS: identity, Shell, file hash roundtrip, scan, video/non-silent audio, multi-touch, clipboard, one remote rotation, HOME, physical volume and floating roundtrip/close |
+
+The final quality screenshot was inspected: all new bitrate labels are visible
+and wrap within the quality panel. Per-case preference and target-size snapshots
+are restored. Development checks were corrected and rerun: a settings assertion
+held a detached widget after navigation; the original gesture sequence ended
+before the sampling period; the first low-limit workload stayed below its limit
+and therefore did not exercise adjustment. The initial settings assertion
+aborted instrumentation on the UI thread; its test stream profile was recovered
+from the existing archived normal profile. The new fixture captures UI assertion
+failures on the instrumentation thread so its cleanup can execute.
+
+### Same-target reproduction and limits
+
+The original `0.7.0` production APK was measured first using the corrected
+test APK, then the final `0.8.0` APK. Each row below averages 16 optional media
+samples during repeated drawer/notification gestures. Both use the same dedicated
+target, 1080×2400 H.264, max size 0, max FPS 120 and audio disabled.
+
+| Client / initial target | Mean / peak payload Mbps | Mean decoded FPS | Mean local decode including queue ms |
+| --- | --- | --- | --- |
+| `0.7.0` / 8 Mbps | 6.26 / 10.02 | 29.54 | 75.37 |
+| `0.7.0` / 100 Mbps | 8.20 / 12.65 | 22.98 | 105.51 |
+| `0.8.0` / 8 Mbps, limit 100 Mbps | 4.89 / 7.63 | 22.33 | 151.95 |
+| `0.8.0` / 100 Mbps, limit 100 Mbps | 7.52 / 10.27 | 21.08 | 105.47 |
+
+Higher requested targets increased actual output in both runs. The original
+APK also showed fewer decoded frames and more queue time at 100 Mbps. Timing
+varied between runs, including the reversed decode-time ordering in the final
+comparison, so these software-emulator samples do not establish a consistent
+latency improvement or a hardware-optimal percentage. The reported real-device
+100–150 Mbps spike was not reproduced; the user's observation that returning
+to 8 Mbps resolves it remains separately attributed user evidence.
+
+The final 8 Mbps soft-limit case logged measured encoder output **8.088 Mbps**,
+then lowered its request to **6.726 Mbps**; subsequent low-output recovery reached
+7.398 and then 8 Mbps, never exceeding the initial target. This demonstrates
+real `setParameters()` feedback on the tested encoder. It permits short bursts,
+does not cap audio/network overhead, and cannot guarantee vendor drivers obey
+all updates. Rejected updates and sustained excess at the minimum request are
+reported as an unavailable limit; those vendor failure paths were not reproduced
+on physical hardware. Qualcomm, OTG, real-game latency, microphone/camera and
+the full four-orientation hardware matrix were not retested in this run.
+
 ## 0.7.0 window dismissal, quality positioning and palette — 2026-10-22
 
 The requested items were implemented and checked in order, then the final

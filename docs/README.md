@@ -5,7 +5,8 @@
 | 文档 | 内容 |
 | --- | --- |
 | [开发接手文档](development-handoff.md) | 全部开发阶段总结、架构/源码索引、数据和协议约束、构建测试、踩坑与已知问题 |
-| [需求与回归设计](requirements-and-regression.md) | 当前 0.6.1-dev 行为、需求编号、验收矩阵和实体机补充清单 |
+| [需求与回归设计](requirements-and-regression.md) | 当前行为、需求编号、验收矩阵和实体机补充清单 |
+| [码率控制](bitrate-control.md) | 0.8.0 目标策略、服务端软上限、配套构建和验证边界 |
 | [多指队列分析](touch-queue-analysis.md) | 修改前复现、MOVE/UP 寿命与批写策略、真实延迟验证边界 |
 | [本轮开发清单](current-development-checklist.md) | 六项功能的顺序开发和验证状态 |
 | [测试记录](../TESTING.md) | 各版本实际测试结果、跳过项及证据边界 |

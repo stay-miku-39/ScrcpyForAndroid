@@ -31,6 +31,8 @@ final class ScrcpySession implements AutoCloseable {
     private volatile long trackStartAudioBytes;
     volatile String actualAudioDecoder = "", actualVideoEncoder = "", actualAudioEncoder = "";
     volatile String activeBackend = "", effectiveVideo = "h264", effectiveAudio = "raw", effectiveRateMode = "auto";
+    volatile boolean bitrateLimitUnavailable;
+    volatile int currentVideoBitRate, bitrateAdjustments;
     volatile int displayWidth, displayHeight;
     volatile int remoteDisplayId = -1;
     private final List<String> notices = new CopyOnWriteArrayList<>();
@@ -67,7 +69,7 @@ final class ScrcpySession implements AutoCloseable {
 
     ScrcpySession(Context context, DeviceConnection device, Surface surface, boolean audio, Listener listener) {
         this.context = context.getApplicationContext(); this.device = device; this.adb = device.adb; this.surface = surface; this.audioEnabled = audio; this.listener = listener;
-        settings = StreamPreferences.snapshot(context); displayConfig = new SessionDisplay(context, device);
+        settings = StreamPreferences.snapshot(context); currentVideoBitRate = settings.videoBitRate; displayConfig = new SessionDisplay(context, device);
         connectionTrace = new ConnectionTrace(text -> this.listener.status(text), DebugLog::write);
     }
     private AdbStream open(String destination) throws Exception {
@@ -91,7 +93,7 @@ final class ScrcpySession implements AutoCloseable {
         remoteFiles.add(remoteJar);
         DebugLog.write("connect settings target=" + device.target + " resolution=" + settings.resolution + " backend=" + settings.backend
                 + " local=" + settings.localWidth + "x" + settings.localHeight + " custom=" + settings.values.get("customWidth") + "x" + settings.values.get("customHeight")
-                + " maxSize=" + settings.maxSize + " fps=" + settings.fps + " video=" + settings.videoCodec + " videoBitRate=" + settings.videoBitRate + " rateMode=" + settings.videoBitRateMode
+                + " maxSize=" + settings.maxSize + " fps=" + settings.fps + " video=" + settings.videoCodec + " videoBitRate=" + settings.videoBitRate + " targetMode=" + settings.videoTargetMode + " videoBitRateLimit=" + settings.videoBitRateLimit + " rateMode=" + settings.videoBitRateMode
                 + " audioEnabled=" + audioEnabled + " audio=" + settings.audioCodec + " audioBitRate=" + settings.audioBitRate
                 + " videoEncoder=" + settings.videoEncoder + " videoDecoder=" + settings.videoDecoder
                 + " audioEncoder=" + settings.audioEncoder + " audioDecoder=" + settings.audioDecoder);
@@ -118,6 +120,7 @@ final class ScrcpySession implements AutoCloseable {
                 if ("main".equals(route) && !"original".equals(settings.resolution)) connectionTrace.call("display-apply", "正在应用被控主屏分辨率…", "requested=" + requested[0] + "x" + requested[1], () -> { displayConfig.apply(original, requested[0], requested[1]); return null; });
                 if ("native".equals(route)) { displayWidth = original.width; displayHeight = original.height; notice("两种显示方式未能应用，使用原始主屏尺寸"); }
                 while (!closed.get()) {
+                    bitrateLimitUnavailable = false; currentVideoBitRate = settings.videoBitRate; bitrateAdjustments = 0;
                     Attempt current = new Attempt(); attempt = current;
                     current.videoCodec = safeVideo ? "h264" : settings.videoCodec; current.videoDecoder = safeVideo ? "" : settings.videoDecoder;
                     current.audioCodec = safeAudio ? "raw" : settings.audioCodec; current.audioDecoder = safeAudio ? "" : settings.audioDecoder;
@@ -134,7 +137,7 @@ final class ScrcpySession implements AutoCloseable {
         }, () -> { Attempt current = attempt; return !closed.get() && (current == null || !current.ready); },
                 (route, error) -> notice(("virtual".equals(route) ? "虚拟显示" : "主屏尺寸") + "未能启用，尝试下一种方式：" + error.getMessage()));
     }
-    private String serverCommand() { return "CLASSPATH=" + remoteJar + " app_process / com.genymobile.scrcpy.Server 5.0.1"; }
+    private String serverCommand() { return "CLASSPATH=" + remoteJar + " app_process / com.genymobile.scrcpy.android.AndroidServer " + settings.videoBitRateLimit + " 5.0.1"; }
     static boolean encoderSupported(String list, String kind, String codec, String component) {
         for (String line : list.split("\n")) if (line.contains("--" + kind + "-codec=" + codec + " ")
                 && (component.isEmpty() || line.matches(".*--" + kind + "-encoder=" + java.util.regex.Pattern.quote(component) + "(?:\\s.*)?"))) return true;
@@ -166,6 +169,12 @@ final class ScrcpySession implements AutoCloseable {
                 BufferedReader reader = new BufferedReader(new InputStreamReader(shell.openInputStream(), StandardCharsets.UTF_8)); String line;
                 while ((line = reader.readLine()) != null) {
                     DebugLog.write("server " + line);
+                    java.util.regex.Matcher bitrate = java.util.regex.Pattern.compile("Video bitrate adjusted: target=(\\d+)").matcher(line);
+                    if (!current.stopped.get() && bitrate.find()) { currentVideoBitRate = Integer.parseInt(bitrate.group(1)); bitrateAdjustments++; }
+                    if (line.contains("Video bitrate limit unavailable:") && !current.stopped.get()) {
+                        bitrateLimitUnavailable = true;
+                        notice("远端编码器未能执行码率软上限，请降低高级目标码率。");
+                    }
                     {
                         java.util.regex.Matcher encoder = java.util.regex.Pattern.compile("Using (video|audio) encoder: '([^']+)'").matcher(line);
                         if (encoder.find()) { if ("video".equals(encoder.group(1))) actualVideoEncoder = encoder.group(2); else actualAudioEncoder = encoder.group(2); }
@@ -394,7 +403,7 @@ final class ScrcpySession implements AutoCloseable {
     String qualityCodecDescription() {
         VideoDecoder current = decoder;
         return width + "×" + height + " · " + activeBackend + "\n视频 " + effectiveVideo + " · 编码 " + (actualVideoEncoder.isEmpty() ? "自动（未上报）" : actualVideoEncoder)
-                + "\n解码 " + (current == null ? "等待" : current.description) + "\n目标 " + settings.videoBitRate/1e6 + " Mbps · " + settings.fps + " fps 上限 · " + effectiveRateMode
+                + "\n解码 " + (current == null ? "等待" : current.description) + "\n初始目标 " + settings.videoBitRate/1e6 + " Mbps · 当前请求 " + currentVideoBitRate/1e6 + " Mbps · 软上限 " + settings.videoBitRateLimit/1e6 + " Mbps" + (bitrateLimitUnavailable ? "（未生效）" : "") + " · " + settings.fps + " fps 上限 · " + effectiveRateMode
                 + "\n音频 " + (audioEnabled ? effectiveAudio + " · " + (actualAudioDecoder.isEmpty() ? "PCM 直通/等待" : actualAudioDecoder) : "关闭");
     }
     int qualityControlDepth() { return controls.size(); }

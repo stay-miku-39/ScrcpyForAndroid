@@ -1,6 +1,6 @@
 # 开发接手文档
 
-整理日期：2026-10-22。源码基线为 0.7.0（versionCode 10），此前 0.6.1-dev 提交为 `d0f89ab`、0.4.1 功能提交为 `2f877c1`。本文总结此前开发、实现选择和验证证据，供未读过聊天历史的 agent 接手。后续以用户最新要求和实际源码为准，修改后同步本文。
+整理日期：2026-10-22。源码基线为 0.8.0（versionCode 11），此前 0.7.0 提交为 `c541c6a`、0.6.1-dev 为 `d0f89ab`、0.4.1 功能提交为 `2f877c1`。本文总结此前开发、实现选择和验证证据，供未读过聊天历史的 agent 接手。后续以用户最新要求和实际源码为准，修改后同步本文。
 
 ## 1. 项目目的与当前结论
 
@@ -21,6 +21,7 @@
 | [README.md](../README.md) | 用户使用、构建、仓库结构和快速测试说明 |
 | [INPUT_SHARING.md](../INPUT_SHARING.md) | Android 14+ 麦克风/摄像头调查、权限边界、原型和实测证据 |
 | [ui-assets.md](ui-assets.md) | 小窗 Material Components、矢量图标及许可来源 |
+| [bitrate-control.md](bitrate-control.md) | 目标/上限策略、服务端反馈调节、生成构建钩子与验证边界 |
 | [vendor/adb/UPSTREAM.md](../vendor/adb/UPSTREAM.md) | LibADB 固定来源及本地补丁 |
 | [vendor/adb/USB_TRANSPORT.md](../vendor/adb/USB_TRANSPORT.md) | USB 通道设计及随 vendored 代码保留的验证说明 |
 
@@ -42,6 +43,7 @@
 | 0.6.0-dev | 分辨率与音视频全局启动快照、主屏/虚拟显示回退、压缩音频和可选编解码组件 | 设置仅新会话生效；逻辑尺寸与编码上限独立；原始尺寸也遵循路线偏好；退出恢复主屏已有 override |
 | 0.6.1-dev | 整页手动保存、连接阶段与可选日志、选择性质量统计、首次安装编解码推荐、多指长按连续性 | 未保存离开丢弃；质量仅全屏前台按选项采集；本地硬解不代表远端硬编；过期 MOVE 不取消长按，UP 保留 |
 | 0.7.0 | 小窗标题甩出关闭、质量窗口定位、HSV 调色盘、目标码率/CBR、自动低延迟硬解选择 | 关闭保留 ADB；定位完成前不保存，普通显示触摸穿透；颜色仍须整页保存；默认编码策略和既有配置保留；Qualcomm 真机异常未复现，不能宣称已根治 |
+| 0.8.0 | 常用视频软上限，高级默认 8 Mbps / 自动比例 / 自定义目标，服务端按输出反馈调节 | 升级旧目标保留但先用默认；默认上限 20 Mbps；动态请求另列；不改媒体/控制协议，固定子模块的生成副本插入限额钩子；不承诺硬限速或真机最优百分比 |
 
 主仓库现有关键提交：`5b99ccd` 仓库重组、`d6ae69a` 麦克风、`c1c97b9` 电源/方向/设置、`2f877c1` 小窗微调。0.1/0.2 的功能早于主仓库重组，不能推断它们各有独立的根仓库版本提交。
 
@@ -159,7 +161,7 @@ flowchart LR
 
 每次会话使用随机 scid，上传 `/data/local/tmp/scrcpy-android-<随机值>.jar`，经 shell `CLASSPATH=... app_process / com.genymobile.scrcpy.Server 5.0.1 ...` 启动，连接 `localabstract:scrcpy_<scid>`。同一 ADB 连接承载独立视频、可选音频、控制与辅助 Shell 流。
 
-视频默认为 H.264，最大边 1600、60 fps、6 Mbps；设置可选 H.265/AV1/VP8/VP9、最大边（0 不限）、帧率/码率和具体组件。v5 在初始/旋转时使用新的 12 字节视频会话头，不能套用旧版本仅一次固定宽高的读法。媒体包单包分配上限 16 MiB；视频尺寸验证上限 16384。声音默认远端 PCM，也可选 AAC/Opus/FLAC，最终均以 48 kHz 双声道 PCM16 交给 AudioTrack。`Streamer` 对 Opus/FLAC 配置包做过精简，AudioPlayback 需重建 Android 所需的 CSD（Opus 预跳过/预滚动、FLAC marker 和 STREAMINFO 块），不能把压缩数据直接写给 AudioTrack。
+视频默认为 H.264，最大边 1600、60 fps、目标 8 Mbps / 软上限 20 Mbps；设置可选 H.265/AV1/VP8/VP9、最大边（0 不限）、帧率/码率和具体组件。v5 在初始/旋转时使用新的 12 字节视频会话头，不能套用旧版本仅一次固定宽高的读法。媒体包单包分配上限 16 MiB；视频尺寸验证上限 16384。声音默认远端 PCM，也可选 AAC/Opus/FLAC，最终均以 48 kHz 双声道 PCM16 交给 AudioTrack。`Streamer` 对 Opus/FLAC 配置包做过精简，AudioPlayback 需重建 Android 所需的 CSD（Opus 预跳过/预滚动、FLAC marker 和 STREAMINFO 块），不能把压缩数据直接写给 AudioTrack。
 
 0.6.0-dev 启动先读取 StreamSettings 快照并查询配套服务端 `list_encoders`，验证本地解码器与远端编码器。按用户偏好尝试主屏尺寸/独立虚拟显示，均失败后使用原始主屏；音视频设置失败另外回退 H.264/PCM。回退只发生在建立阶段，首帧/音频就绪后真实断线仍结束会话。每次尝试使用独立 scid 和启动 jar，保留上游 cleanup；退出释放所有尝试的流和临时文件。首帧就绪检查独立于后续媒体包，静态画面不必等待下一包才能启用控制。
 
@@ -178,6 +180,10 @@ flowchart LR
 各数字分别标注含义：FPS 为接收/解码/Surface 回调，码率为媒体有效载荷；视频延迟为本地入解码队列至输出（含排队），音频为 feed 调用耗时（含解码/输出等待）及 AudioTrack 缓冲/欠载，控制为实际写入次数/字节、排队与写入耗时，RTT 包含 Shell 开销。它们不代表光学帧率、远端消费率或端到端延迟；固定服务端没有编码耗时测量时显示“未上报”，组件名没取得则显示未知。不能将 Opus 输入/输出 PTS 当相同键匹配耗时。
 
 0.7.0 的码率对照核对了上游 `app/src/server.c`、`Options.java`、`SurfaceEncoder.java` 与 `Streamer.java`：两端使用同一服务端编码逻辑，Android 的目标值通过 `video_bit_rate` 传入，计数为压缩媒体有效载荷。桌面上游默认 8 Mbps，本项目保留 6 Mbps 默认，不静默改写已有设置；新增 8 Mbps 快捷填入和 `videoBitRateMode=auto|cbr` 启动快照。自动模式不传额外选项；CBR 只传固定的 `video_codec_options=bitrate-mode=2`，启动失败的兼容重试移除此选项并提示。质量窗口显示目标、实际与生效模式，不能把目标当网络瞬时硬上限。[Android CBR 说明](https://developer.android.com/reference/android/media/MediaCodecInfo.EncoderCapabilities#BITRATE_MODE_CBR)。
+
+0.8.0 取代上述默认/快捷输入方式：常用 `videoBitRateLimit` 默认 20 Mbps，高级 `videoTargetMode=default|auto|custom`，生效目标为 `min(8M,上限)`、`max(0.1M,min(80%×上限,8M))` 或自定义值。旧 `videoBitRate` 留存在非活动自定义字段，缺少新方式键的升级安装先按默认目标运行。`StreamSettings.videoBitRate` 字段表示有效初始目标，其 `values` 映射仍保留用户输入。上限、方式及目标均为新会话快照，交接不重启编码器。质量窗口区分初始/当前请求/实测及软上限失败。
+
+服务端构建接入 `src/serverExtensions/`：`AndroidServer` 包装原入口并传入数值上限；Gradle 在构建目录复制原源码，向 `SurfaceEncoder.encode()` 注入初始化和成功写包后两个限额调用，原片段不再唯一时构建失败。`BitrateGovernor` 为纯 Java 窗口反馈策略，`VideoRateLimiter` 在原视频线程调用动态目标参数，拒绝/持续失控时报告失败。子模块仍为原 5.0.1，未更改控制/媒体报文；不依靠 `max-bitrate` 隐藏键、不丢包/积压限速。完整算法、原生接口依据与边界见 [码率控制](bitrate-control.md)。
 
 `VideoDecoder` 自动选择先尝试支持当前格式/尺寸且声明 `FEATURE_LowLatency` 的硬件组件，创建或配置失败继续寻找，再使用原有自动选择/goldfish 软件回退；显式组件名不被覆盖。继续请求 `KEY_LOW_LATENCY=1`、保留全部压缩参考帧和已解码输出追帧。质量信息显示低延迟能力声明，不把它写成延迟实测结论；该能力需要 SoC 驱动支持，见 [AOSP 说明](https://source.android.com/docs/core/media/low-latency-media)。服务日志中已收到的编码器名称在启动时保存，稍后开启质量选项仍可读取；日志级别未提供的名称继续显示未上报。
 
@@ -238,6 +244,8 @@ flowchart LR
 
 **0.7.0 性能问题边界**：用户报告 Qualcomm `c2.qti.avc.decoder` 路径在桌面滑动时达到 100–150 Mbps、约 50 媒体包/s 和本地解码排队 16–20 ms。本次仅获准使用的两台模拟器不包含该组件；同机桌面 5.0.1/Android 端在 1080×2400、H.264、120 fps 上限、8/100 Mbps 目标下未复现该高码率。低延迟组件选择、CBR 请求与诊断改进已经实现，但没有原设备/同参数下的修复前后证据，原现象仍待实体机确认。模拟器的软件编码/软件解码排队不能外推为 Qualcomm 真机性能。继续调查需先核对双方目标码率、实际编码器、显示路线/尺寸和相同场景，再比较实际媒体流；不能仅凭本地解码器名称判定编码端码率异常根因。
 
+**0.8.0 后续证据**：用户反馈原设备将目标从 100 Mbps 恢复 8 Mbps 后卡顿消失，支持高目标增加编码/传输/解码负担的解释。本次新指定模拟器上旧版对照也观察到 100 Mbps 目标的平均实际码率上升、解码 FPS 降低及本地排队增加，但仍未复现 100–150 Mbps，不能等同 Qualcomm 修复前后实测。自动比例采用保守初值，不能宣称已按各硬件优化。动态软上限与基础回归的实际结果见 TESTING.md。
+
 ## 8. 通用构建与测试准备
 
 准备 JDK 21 或以上、Android SDK API 36 和 platform-tools。通过 `JAVA_HOME` 配置 JDK，通过 `ANDROID_HOME` 或未提交的 `local.properties` 中 `sdk.dir` 配置 SDK；使用仓库的 Gradle Wrapper。
@@ -295,6 +303,8 @@ adb -s <主控序列号> shell am instrument -w -e host <被控IP> -e port <被�
 0.6.1-dev 新增 `-e featureCase draft/logging/codecDiscovery`（每次一个）和 `-e mediaCase stages/quality/touchHold`；已有分辨率专项为 `main/virtual/fallback/presets/codecs`。基础回归可加 `-e defaultMedia true -e windowUi true` 暂用默认媒体设置后恢复。touchHold 的弱网验收需要测试代理实际注入延迟并核对计数，单独运行不能当作延迟注入通过。
 
 0.7.0 增加 `-e uiStage dismiss`、`-e mediaCase position|rateControl|performance` 和 `-e featureCase colorPicker`（每次一项）。performance 暂用 1080×2400、最大边 0、最高 120 fps、8/100 Mbps 目标，在专用被控端执行抽屉/通知栏手势，输出参数与本地统计 CSV；结束恢复偏好和原尺寸，不能用于未经授权的日常设备。position 额外验证本机横竖屏下参数窗口可见，不等于重测远端四向旋转专项。
+
+0.8.0 增加 `-e featureCase bitratePolicies` 和 `-e mediaCase rateLimit`。前者验证真实设置、旧目标迁移与校验；后者验证三种模式的目标/上限、纹理动画和桌面超限后的动态请求回报，输出 `bitrate-limit-smoke` CSV。performance 的手势延长以覆盖整个采样期，显式使用自定义目标与 100 Mbps 软上限。专项仍只运行在当次明确授权的专用目标。
 
 探针可能清空目标 Logcat、写文件/生成截图、暂改旋转/长按电源/设备名、录制测试音频。结束恢复系统和 UI 偏好并停止探针/小窗。真实设备通过用户当次授权的步骤验收，不能直接照搬专用模拟器预授权命令。成功检查 `result=PASS` 与 `INSTRUMENTATION_CODE: -1`，主机 adb 正常退出不代表测试通过。
 

@@ -17,6 +17,7 @@ final class StreamSettingsView extends LinearLayout {
     private TextView codecStatus;
     private TextView result;
     private Button save;
+    private TextView ratePreview;
     StreamSettingsView(Context context, java.util.function.Consumer<Map<String, String>> saveAction) {
         super(context); setOrientation(VERTICAL); setTag("streamSettings");
         Map<String, String> saved = StreamPreferences.snapshot(context).values;
@@ -31,22 +32,34 @@ final class StreamSettingsView extends LinearLayout {
         label("留空时尝试系统默认桌面，再尝试系统设置。虚拟屏中的任务结束后会尝试移回主屏。", false);
         field("maxSize", "视频传输最大边（px，0 不限；默认 1600）", saved, true);
         select("videoCodec", "视频编码格式", StreamSettings.VIDEOS, new String[]{"H.264（兼容优先）", "H.265 / HEVC", "AV1", "VP8", "VP9"}, saved);
-        field("videoBitRate", "视频目标码率（bit/s，6000000 = 6 Mbps）", saved, true);
-        Button desktopRate = new Button(context); desktopRate.setText("使用桌面 scrcpy 默认码率 · 8 Mbps"); desktopRate.setAllCaps(false);
-        desktopRate.setOnClickListener(v -> fields.get("videoBitRate").setText("8000000")); addView(desktopRate);
-        select("videoBitRateMode", "视频码率控制", new String[]{"auto","cbr"}, new String[]{"自动（与桌面 scrcpy 默认一致）","恒定码率 CBR（请求抑制码率突发）"}, saved);
-        label("目标码率不是瞬时上限。对比桌面端时须使用相同目标码率、尺寸和编码器。CBR 需远端编码器支持，不支持时回退自动；高目标值仍会增加带宽与解码负担。",false);
+        field("videoBitRateLimit", "视频码率上限（bit/s，20000000 = 20 Mbps）", saved, true);
+        label("软上限：按约 1 秒输出窗口超限时降低编码目标，关键帧可短时超过；不丢视频帧、不延迟发包。编码器不支持动态调节时会提示。通常保持默认目标 8 Mbps，增加上限不会要求设备填满带宽。",false);
+        ratePreview = label("",false); ratePreview.setTag("stream_ratePreview");
         field("fps", "最高帧率（1–240，默认 60）", saved, true);
         select("audioCodec", "音频编码格式", StreamSettings.AUDIOS, new String[]{"PCM（无压缩）", "AAC", "Opus", "FLAC（无损）"}, saved);
         field("audioBitRate", "音频码率（bit/s，16000–512000）", saved, true);
         label("PCM 不使用码率或编解码组件设置；FLAC 的实际码率取决于内容。声音开关仍在连接页。组件不可用会提示并回退 H.264 / PCM。", false);
         codecStatus = label("正在检测本机编解码器能力…",false); codecStatus.setTag("codecSupportSummary");
         LinearLayout advanced = new LinearLayout(context); advanced.setOrientation(VERTICAL); advanced.setVisibility(GONE);
-        Button expand = new Button(context); expand.setText("高级：指定编解码组件"); addView(expand); expand.setOnClickListener(v -> advanced.setVisibility(advanced.getVisibility() == GONE ? VISIBLE : GONE));
+        Button expand = new Button(context); expand.setText("高级：目标码率与编解码组件"); expand.setTag("stream_advanced"); addView(expand); expand.setOnClickListener(v -> advanced.setVisibility(advanced.getVisibility() == GONE ? VISIBLE : GONE));
+        select(advanced,"videoTargetMode", "目标码率方式", new String[]{"default","auto","custom"},new String[]{"默认目标 · 8 Mbps（不超过上限）","自动比例 · 上限的 80%，最高 8 Mbps","自定义目标码率"},saved);
+        fields.put("videoBitRate",makeField(advanced,"videoBitRate","自定义目标码率（bit/s，仅自定义方式生效）",saved.get("videoBitRate"),true));
+        select(advanced,"videoBitRateMode", "编码器码率控制", new String[]{"auto","cbr"},new String[]{"自动（与桌面 scrcpy 默认一致）","恒定码率 CBR（需远端支持）"},saved);
         for (String[] item : new String[][]{{"videoEncoder", "被控视频编码器"}, {"videoDecoder", "本地视频解码器"}, {"audioEncoder", "被控音频编码器"}, {"audioDecoder", "本地音频解码器"}}) {
             EditText input = makeField(advanced, item[0], item[1] + "（组件名称，留空自动）", saved.get(item[0]), false); fields.put(item[0], input);
         }
         addView(advanced);
+        android.text.TextWatcher rateWatcher = new android.text.TextWatcher() {
+            public void beforeTextChanged(CharSequence s,int start,int count,int after) { }
+            public void onTextChanged(CharSequence s,int start,int before,int count) { updateRatePreview(); }
+            public void afterTextChanged(android.text.Editable text) { }
+        };
+        fields.get("videoBitRateLimit").addTextChangedListener(rateWatcher); fields.get("videoBitRate").addTextChangedListener(rateWatcher);
+        choices.get("videoTargetMode").setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            public void onItemSelected(AdapterView<?> parent,View view,int position,long id) { updateRatePreview(); }
+            public void onNothingSelected(AdapterView<?> parent) { }
+        });
+        updateRatePreview();
         result = label("", false); result.setTag("streamSettingsResult");
         save = new Button(context); save.setText("保存全部设置"); save.setTag("saveStreamSettings"); addView(save);
         save.setOnClickListener(v -> {
@@ -69,6 +82,19 @@ final class StreamSettingsView extends LinearLayout {
         }
         result.setText(""); clearFocus();
         loaded = new LinkedHashMap<>(saved);
+        updateRatePreview();
+    }
+    private void updateRatePreview() {
+        boolean custom = choices.get("videoTargetMode").getSelectedItemPosition()==2;
+        fields.get("videoBitRate").setEnabled(custom);
+        try {
+            Map<String,String> values = new LinkedHashMap<>(StreamSettings.DEFAULTS);
+            values.put("videoBitRateLimit",fields.get("videoBitRateLimit").getText().toString().trim());
+            values.put("videoBitRate",fields.get("videoBitRate").getText().toString().trim());
+            values.put("videoTargetMode",keys.get("videoTargetMode")[choices.get("videoTargetMode").getSelectedItemPosition()]);
+            StreamSettings.validate(values); int limit=Integer.parseInt(values.get("videoBitRateLimit")), target=StreamSettings.targetBitRate(values);
+            ratePreview.setText(String.format(Locale.ROOT,"新会话：目标 %.2f Mbps（上限的 %.0f%%）· 软上限 %.2f Mbps",target/1e6,target*100.0/limit,limit/1e6));
+        } catch (RuntimeException error) { ratePreview.setText("请填写有效码率；自定义目标不能超过上限。"); }
     }
     void refreshCodecLabels() {
         CodecCatalog catalog = CodecCatalog.cached; if (catalog == null) return;
@@ -95,9 +121,13 @@ final class StreamSettingsView extends LinearLayout {
         field.setInputType(numeric ? InputType.TYPE_CLASS_NUMBER : InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS); parent.addView(field, new LayoutParams(-1, -2)); return field;
     }
     private void select(String key, String text, String[] values, String[] labels, Map<String, String> saved) {
+        select(this,key,text,values,labels,saved);
+    }
+    private void select(LinearLayout parent,String key, String text, String[] values, String[] labels, Map<String, String> saved) {
         baseLabels.put(key, labels.clone());
-        label(text, false); Spinner spinner = new Spinner(getContext()); spinner.setTag("stream_" + key); spinner.setContentDescription(text);
+        TextView title = new TextView(getContext()); title.setText(text); title.setTextColor(MainUi.MUTED); parent.addView(title);
+        Spinner spinner = new Spinner(getContext()); spinner.setTag("stream_" + key); spinner.setContentDescription(text);
         ArrayAdapter<String> adapter = new ArrayAdapter<>(getContext(), android.R.layout.simple_spinner_item, labels); adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        spinner.setAdapter(adapter); spinner.setSelection(Math.max(0, Arrays.asList(values).indexOf(saved.get(key)))); addView(spinner, new LayoutParams(-1, MainUi.dp(getContext(), 52))); choices.put(key, spinner); keys.put(key, values);
+        spinner.setAdapter(adapter); spinner.setSelection(Math.max(0, Arrays.asList(values).indexOf(saved.get(key)))); parent.addView(spinner, new LayoutParams(-1, MainUi.dp(getContext(), 52))); choices.put(key, spinner); keys.put(key, values);
     }
 }
